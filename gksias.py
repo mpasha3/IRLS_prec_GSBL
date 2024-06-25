@@ -98,7 +98,7 @@ def theta_update(x, r, beta, vartheta):
 
 
 
-def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5, regparam='gcv', x_true=None, **kwargs):
+def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5, regparam='gcv', regparam_fixed=None, x_true=None, **kwargs):
 
     dp_stop = kwargs['dp_stop'] if ('dp_stop' in kwargs) else False
     isoTV_option = kwargs['isoTV'] if ('isoTV' in kwargs) else False
@@ -131,7 +131,10 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         LV = L @ V
 
     # Initialize vartheta
-    vartheta = 1.0
+    if regparam_fixed is None:
+         vartheta = 1.0
+    else:
+         vartheta = 1.0/regparam_fixed
 
     for ii in tqdm(range(n_iter), desc='running MMGKS...'):
 
@@ -155,12 +158,15 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         (Q_L, R_L) = la.qr(LL, mode='economic') 
 
         # Update lambda and vartheta
-        if regparam == 'gcv':
-            lambdah = generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs)
-        elif regparam == 'dp':
-            lambdah = discrepancy_principle(Q_A, R_A, R_L, b, **kwargs)
+        if regparam_fixed is None:
+            if regparam == 'gcv':
+                lambdah = generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs)
+            elif regparam == 'dp':
+                lambdah = discrepancy_principle(Q_A, R_A, R_L, b, **kwargs)
+            else:
+                lambdah = regparam
         else:
-            lambdah = regparam
+             lambdah = regparam_fixed
         lambda_history.append(lambdah)
         
         # Handle vartheta

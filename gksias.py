@@ -11,7 +11,7 @@
 # from collections.abc import Iterable
 
 from trips.utilities.decompositions import *
-from trips.utilities.reg_param.gcv import *
+
 from trips.utilities.reg_param.discrepancy_principle import *
 from trips.utilities.utils import *
 
@@ -24,6 +24,9 @@ from tqdm import tqdm
 from collections.abc import Iterable
 
 from scipy.integrate import odeint
+
+# Use the gcv codes in this repo!
+from modified_gcv import modified_gcv, generalized_crossvalidation
 
 
 
@@ -161,6 +164,8 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         if regparam_fixed is None:
             if regparam == 'gcv':
                 lambdah = generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs)
+            elif regparam == 'mgcv':
+                 lambdah = modified_gcv(Q_A, R_A, R_L, b, **kwargs)
             elif regparam == 'dp':
                 lambdah = discrepancy_principle(Q_A, R_A, R_L, b, **kwargs)
             else:

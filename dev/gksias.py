@@ -101,7 +101,7 @@ def theta_update(x, r, beta, vartheta):
 
 
 
-def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5, regparam='gcv', regparam_fixed=None, x_true=None, **kwargs):
+def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5, regparam='gcv', regparam_fixed=None, keep_x=True, x_true=None, **kwargs):
 
     dp_stop = kwargs['dp_stop'] if ('dp_stop' in kwargs) else False
     isoTV_option = kwargs['isoTV'] if ('isoTV' in kwargs) else False
@@ -117,10 +117,12 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
     lambda_history = []
     vartheta_history = []
     residual_history = []
+    n_gcv_evals_history = []
+    rre_history = []
+    cond_ests = []
     e = 1
     x = A.T @ b 
-    if x_true is not None:
-         x = x_true
+   
     AV = A@V
     if GS_option in  ['GS', 'gs', 'Gs']:
         nx = prob_dims[0]
@@ -147,23 +149,27 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         
         # Transform to sparse domain
         u = L @ x
+
         
         # Update the weights
         theta = theta_update( u/np.sqrt(vartheta), hyperpr_r, hyperpr_beta, 1.0)
         wr = 1.0/np.sqrt(theta)
+        wr = np.squeeze(wr)
         #wr = theta_update(u/np.sqrt(vartheta), hyperpr_r, hyperpr_beta, 1.0)
         # wr = wr.reshape((L.shape[0], 1))
         # wr = smoothed_holder_weights(u, epsilon=epsilon, p=qnorm).reshape((-1,1))  # old version
 
         # QR factorization for weights
         #LL = np.diag(wr[:,0]) @ LV 
+    
         LL = sparse.diags(wr) @ LV
         (Q_L, R_L) = la.qr(LL, mode='economic') 
 
         # Update lambda and vartheta
         if regparam_fixed is None:
             if regparam == 'gcv':
-                lambdah = generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs)
+                lambdah, num_gcv_evals = generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs)
+                n_gcv_evals_history.append(num_gcv_evals)
             elif regparam == 'mgcv':
                  lambdah = modified_gcv(Q_A, R_A, R_L, b, **kwargs)
             elif regparam == 'dp':
@@ -173,6 +179,7 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         else:
              lambdah = regparam_fixed
         lambda_history.append(lambdah)
+ 
         
         # Handle vartheta
         try:
@@ -182,9 +189,19 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         vartheta_history.append(vartheta)
 
         # Get solution
-        y, _ , _, _ = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_L)), np.concatenate((Q_A.T@ b, np.zeros((R_L.shape[0],)))),rcond=None)
+        y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_L)), np.concatenate((Q_A.T@ b, np.zeros((R_L.shape[0],)))),rcond=None)
+        cond_est = np.amax(svals)/np.amin(svals)
+        cond_ests.append(cond_est)
         x = V @ y
-        x_history.append(x)
+
+        if keep_x: 
+             x_history.append(x)
+
+        if x_true is not None:
+             x_true_norm = la.norm(x_true)
+             #rel_err = la.norm(x - x_true) /x_true_norm
+             rre_history.append( la.norm(x - x_true)/x_true_norm )
+             
         if ii >= R_L.shape[0]:
             print("broke")
             break
@@ -194,7 +211,7 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         u = LV @ y
         ra =  (AV @ y - b)
         ra = A.T @ ra
-        rb = sparse.diags(wr) @ (LV @ y)
+        rb = wr*(LV @ y)
         # rb = (LV @ y) * wr
         rb = L.T @ rb
         r = ra + lambdah * rb
@@ -209,17 +226,22 @@ def GKSIAS(A, b, L, hyperpr_r=-1.0, hyperpr_beta=1.0, projection_dim=3, n_iter=5
         Lvn = L*vn
         LV = np.column_stack((LV, Lvn))
         residual_history.append(la.norm(r))
+
     if x_true is not None:
-        x_true_norm = la.norm(x_true)
-        rre_history = [la.norm(x - x_true)/x_true_norm for x in x_history]
+        
         info = {'xHistory': x_history, 'regParam': lambdah, 'regParam_history': lambda_history, 'relError': rre_history, 'Residual': residual_history, 'its': ii}
         info["vartheta_history"] = np.asarray(vartheta_history)
     else:
         info = {'xHistory': x_history, 'regParam': lambdah, 'regParam_history': lambda_history, 'Residual': residual_history, 'its': ii}
         info["vartheta_history"] = np.asarray(vartheta_history)
-        
+    
     info["V"] = V # also give out V
     info["wr"] = wr
     info["theta"] = vartheta_history[-1]*( (1.0/wr)**2 ) # Need to multiply by vartheta to undo change of variables to get true theta
+    info["R_L"] = R_L
+    info["cond_ests"] = np.asarray(cond_ests)
+    info["n_gcv_evals"] = np.asarray(n_gcv_evals_history)
 
     return (x, info)
+
+

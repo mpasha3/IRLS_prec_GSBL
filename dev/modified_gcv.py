@@ -1,12 +1,14 @@
 
 
 import numpy as np 
+import matplotlib.pyplot as plt
 # from scipy.optimize import newton, minimize
 import scipy.linalg as la
 import scipy.optimize as op
 from pylops import LinearOperator
 
 
+from scipy.optimize import minimize
 
 
 
@@ -14,27 +16,29 @@ def gcv_numerator(reg_param, Q_A, R_A, R_L, b, **kwargs):
 
     variant = kwargs['variant'] if ('variant' in kwargs) else 'standard'
 
-    # the observation term:
+    # # the observation term:
 
-    R_A_2 = R_A.T @ R_A
+    # R_A_2 = R_A.T @ R_A
 
-    R_A_2 = R_A_2.todense() if isinstance(R_A_2, LinearOperator) else R_A_2
+    # R_A_2 = R_A_2.todense() if isinstance(R_A_2, LinearOperator) else R_A_2
 
-    # The regularizer term:
+    # # The regularizer term:
 
-    R_L_2 = (R_L.T @ R_L)
+    # R_L_2 = (R_L.T @ R_L)
     
-    R_L_2 = R_L_2.todense() if isinstance(R_L_2, LinearOperator) else R_L_2
+    # R_L_2 = R_L_2.todense() if isinstance(R_L_2, LinearOperator) else R_L_2
 
-    # the inverse term:
+    # # the inverse term:
 
-    inverted = la.solve( ( R_A_2 + reg_param * R_L_2), (R_A.T @ Q_A.T @ b) )
+    # inverted = la.solve( ( R_A_2 + reg_param * R_L_2), (R_A.T @ Q_A.T @ b) )
+
+    inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(reg_param) * R_L)), np.concatenate((Q_A.T @ b, np.zeros((R_L.shape[0],)))),rcond=None)
 
     # return np.sqrt((np.linalg.norm( R_A @ inverted - Q_A.T @ b ))**2 + np.linalg.norm(b - Q_A@(Q_A.T@b))**2)
     if variant == 'modified':
         return ((np.linalg.norm( R_A @ inverted - Q_A.T @ b ))**2 + np.linalg.norm(b - Q_A@(Q_A.T@b))**2)
     else:
-        return (np.linalg.norm( R_A @ inverted - Q_A.T @ b ))**2
+        return np.linalg.norm( R_A @ inverted - Q_A.T @ b )
 
 def gcv_denominator(reg_param, R_A, R_L, b, **kwargs):
 
@@ -42,17 +46,21 @@ def gcv_denominator(reg_param, R_A, R_L, b, **kwargs):
     # print(variant)
     # the observation term:
 
-    R_A_2 = R_A.T @ R_A
+    # R_A_2 = R_A.T @ R_A
 
-    R_A_2 = R_A_2.todense() if isinstance(R_A_2, LinearOperator) else R_A_2
+    # R_A_2 = R_A_2.todense() if isinstance(R_A_2, LinearOperator) else R_A_2
 
-    # The regularizer term:
+    # # The regularizer term:
 
-    R_L_2 = (R_L.T @ R_L)
+    # R_L_2 = (R_L.T @ R_L)
 
-    R_L_2 = R_L_2.todense() if isinstance(R_L_2, LinearOperator) else R_L_2
+    # R_L_2 = R_L_2.todense() if isinstance(R_L_2, LinearOperator) else R_L_2
 
-    inverted = la.solve( ( R_A_2 + reg_param * R_L_2), R_A.T )
+    # inverted = la.solve( ( R_A_2 + reg_param * R_L_2), R_A.T )
+
+
+    inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(reg_param) * R_L)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_L.shape[0],R_A.T.shape[1]) ) ) ),rcond=None)
+
 
     if variant == 'modified':
        m = kwargs['fullsize'] # probably this can be b.size -- NOT FOR HYBRID SOLVERS!
@@ -63,13 +71,13 @@ def gcv_denominator(reg_param, R_A, R_L, b, **kwargs):
         # trace_term = b.size - np.trace(R_A @ inverted) # this is defined with respect to the projected quantities
         trace_term = R_A.shape[0] - np.trace(R_A @ inverted) # this is defined with respect to the projected quantities
     
-    return trace_term**2
+    return trace_term
 
 
 
 
 
-def generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs):
+def generalized_crossvalidation(Q_A, R_A, R_L, b, last_lambdah=None, **kwargs):
 
     if 'tol' in kwargs:
         tol = kwargs['tol']
@@ -83,8 +91,32 @@ def generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs):
     
     # function to minimize
     if gcvtype == 'tikhonov':    
-        gcv_func = lambda reg_param: gcv_numerator(reg_param, Q_A, R_A, R_L, b) / gcv_denominator(reg_param, R_A, R_L, b, **kwargs)
-        lambdah = op.fminbound(func = gcv_func, x1 = 1e-09, x2 = 1e12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
+        
+        #gcv_func = lambda log_reg_param: gcv_numerator(np.exp(log_reg_param), Q_A, R_A, R_L, b) / gcv_denominator(np.exp(log_reg_param), R_A, R_L, b, **kwargs)
+        gcv_func = lambda log_reg_param: np.log( gcv_numerator(np.exp(log_reg_param), Q_A, R_A, R_L, b) ) - np.log( np.abs( gcv_denominator(np.exp(log_reg_param), R_A, R_L, b, **kwargs) ) )
+        
+        log_lambdah = op.fminbound(func = gcv_func, x1 = -12, x2 = 12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
+        lambdah = np.exp(log_lambdah)
+
+        # Plot it?
+        log_lambdas = np.linspace(-12, 12, 25)
+        evals = []
+        for log_lam in log_lambdas:
+            evals.append( gcv_func(log_lam) )
+        plt.plot(log_lambdas, evals)
+        plt.show()
+
+
+        # if last_lambdah is not None:
+        #     x0 = np.log(last_lambdah)
+        # else:
+        #     x0 = None
+        # lambdah_res = minimize(method="Nelder-Mead", fun=gcv_func, x0=x0, bounds=((-9, 12),) )
+        # lambdah = np.exp(lambdah_res.x)
+
+        # log_lambdah = op.brute(func=gcv_func, ranges=((-9, 12),), Ns=50)
+        # lambdah = np.exp(log_lambdah)
+
     elif gcvtype == 'tsvd':
         m = Q_A.shape[0]
         n = R_L.shape[1]
@@ -113,7 +145,7 @@ def generalized_crossvalidation(Q_A, R_A, R_L, b, **kwargs):
             gcv_vals.append(gcv_numerator_tgsvd/gcv_denominator_tgsvd)   
         lambdah = gcv_vals.index(min(gcv_vals))
     
-    return lambdah
+    return lambdah 
 
 
 

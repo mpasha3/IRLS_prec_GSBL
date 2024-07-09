@@ -12,18 +12,37 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from scipy.linalg import qr, qr_insert
 from scipy.integrate import odeint
-from fastprogress import progress_bar
+import scipy.optimize as op
 import scipy.sparse as sps
 
+from fastprogress import progress_bar
+
 from trips.utilities.weights import smoothed_holder_weights
-from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
-from modified_gcv import generalized_crossvalidation
 
-from modified_gcv import gcv_numerator, gcv_denominator
-import scipy.optimize as op
+#from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
+from regparam_selection import mgcv, dp_cubic
 
 
 
+
+
+def find_last_local_min(arr):
+    # Ensure the input is a NumPy array
+    arr = np.asarray(arr)
+    
+    # Iterate from the end of the array to the beginning
+    for i in range(len(arr) - 2, 0, -1):
+        if arr[i] < arr[i - 1] and arr[i] < arr[i + 1]:
+            return i
+    
+    # Check the edge cases for the first and last elements
+    if len(arr) > 1 and arr[0] < arr[1]:
+        return 0
+    if len(arr) > 1 and arr[-1] < arr[-2]:
+        return len(arr) - 1
+    
+    # Return -1 if no local minimum is found
+    return -1
 
 
 
@@ -86,7 +105,7 @@ class MMGKS:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, q=1.0, epsilon=1e-2, regparam="gcv", x0=None, x_true=None, gcv_gamma=0.1, plotting=False, pdf_name="demo.pdf", helping=False, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, q=1.0, epsilon=1e-2, regparam="dp", x0=None, x_true=None, **kwargs):
         """Driver for MMGKS solver.
         """
 
@@ -107,10 +126,6 @@ class MMGKS:
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
-
-        # Plotting?
-        if plotting:
-            pdf = PdfPages(pdf_name)
         
         # Build initial basis and QR factor of AV
         V = self.build_initial_basis(init_dim)
@@ -123,6 +138,10 @@ class MMGKS:
         LV = self.L @ V
         tot_matvec_L += init_dim
 
+        # Stuff for cubic DP
+        beta0 = None
+        dp_cubic_n_iters = []
+
         for ii in progress_bar(range(n_iter)):
 
             # Update weights and get new QR factorization of W L V
@@ -134,22 +153,24 @@ class MMGKS:
             Q_WL, R_WL = qr(WLV, mode='economic') 
             
 
-            lambdah, fig = self.choose_lambdah_gcv(Q_A, R_A, R_WL, self.b, plotting=plotting, gcv_gamma=gcv_gamma, helping=helping)
-            if plotting:
-                pdf.savefig(fig)
-                plt.close(fig)
-
-            # # Select new regularization parameter
-            # if regparam == "gcv":
-            #     lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
-            # elif regparam == "dp":
-            #     lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
-            #     # fix delta to be 1, since we have already whitened in the begining
-            # else:
-            #     # Otherwise hope regparam is a value and hold equal to this
-            #     lambdah = regparam
-
+            # Select new regularization parameter
+            if regparam == "mgcv":
+                proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
+            elif regparam == "dp":
+                shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                try:
+                    data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
+                except:
+                    pass
+                proposed_lambdah = data["lambda"]
+                dp_cubic_n_iters.append(data["n_iters"])
+            else:
+                raise NotImplementedError
+            
+            # Screen the proposed lambdah somehow? Just accept for now...
+            lambdah = proposed_lambdah
             lambda_history.append(lambdah)
+            beta0 = 1.0/lambdah
 
             # Obtain new solution
             y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=None)
@@ -199,73 +220,17 @@ class MMGKS:
             "lambda_history": np.asarray(lambda_history),
             "V": V,
             "cond_ests": np.asarray(cond_ests),
+            "dp_cubic_n_iters": np.asarray(dp_cubic_n_iters),
         }
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
 
-        if plotting:
-            pdf.close()
-
         return data
-    
 
 
-    def choose_lambdah_gcv(self,Q_A, R_A, R_WL, b, gcv_gamma=0.1, plotting=False, helping=False):
-        """Chooses a new lambdah parameter using cross validation. If plotting=True is passed,
-        also makes a plot of the GCV functional.
-        """
 
-        # Build objective function (in terms of log lambda)
-        #gcv_func = lambda log_reg_param: np.log( gcv_numerator(np.power(10, log_reg_param), Q_A, R_A, R_WL, b) ) - np.log( gcv_denominator(np.power(10,log_reg_param), R_A, R_WL, b ) ) 
-        #gcv_func = lambda log_reg_param: gcv_numerator(np.exp(log_reg_param), Q_A, R_A, R_WL, b) / gcv_denominator(np.exp(log_reg_param), R_A, R_WL, b)
 
-        def gcv_func(log_reg_param):
-            inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_WL.shape[0],R_A.T.shape[1]) ) ) ),rcond=None)
-            Z = R_A @ inverted
-            fac = gcv_gamma + (1.0 - gcv_gamma)*(1.0/R_A.shape[0])*np.trace( Z @ Z )
-            return np.log(fac) + np.log( gcv_numerator(np.power(10, log_reg_param), Q_A, R_A, R_WL, b) ) - np.log( np.abs(gcv_denominator(np.power(10,log_reg_param), R_A, R_WL, b ) ) ) 
-
-        # Compute a solution
-        log_lambdah_star = op.fminbound(func = gcv_func, x1 = -12, x2 = 12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
-        log_lambdah_star_eval = gcv_func(log_lambdah_star)
-        lambdah_star = np.power(10,log_lambdah_star)
-        
-        # If plotting?
-        fig = None
-        if plotting:
-            log_lambdahs = np.linspace(-12, 12, 100)
-            evals = []
-            for log_lambdah in log_lambdahs:
-                evals.append( gcv_func(log_lambdah) )
-
-            fig, axs = plt.subplots()
-
-            axs.plot(log_lambdahs, evals, linestyle='--', color='b') 
-            axs.scatter(log_lambdahs, evals, marker='x', color='b', label="Sample points") 
-            axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
-            axs.set_xlabel("$\\log_{10} \\lambda$")
-            axs.set_ylabel("$\\ln \\text{GCV}(\\lambda)$")
-            axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}")
-            axs.legend()
-
-           # Overwrite if a grid point is better?
-            if helping:
-                
-                min_idx = np.argmin(evals)
-                min_eval = np.amin(evals)
-                grid_opt_log_lambdah = log_lambdahs[min_idx]
-                if log_lambdah_star_eval > min_eval:
-                    axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}, overwrote!")
-                    log_lambdah_star = grid_opt_log_lambdah
-                    lambdah_star = np.power(10, log_lambdah_star)
-                    log_lambdah_star_eval = min_eval
-
-            axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
-            axs.legend()
-
-        return lambdah_star, fig
-    
 
 
 
@@ -392,7 +357,7 @@ class GKSIAS:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, hyperpr_r=-1.0, hyperpr_beta=1.0, x0=None, x_true=None, gcv_gamma=0.1, plotting=False, pdf_name="demo.pdf", helping=False, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, hyperpr_r=-1.0, hyperpr_beta=1.0, regparam="dp", x0=None, x_true=None,  **kwargs):
         """Driver for MMGKS solver.
         """
 
@@ -414,10 +379,6 @@ class GKSIAS:
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
-
-        # Plotting?
-        if plotting:
-            pdf = PdfPages(pdf_name)
         
         # Build initial basis and QR factor of AV
         V = self.build_initial_basis(init_dim)
@@ -432,6 +393,10 @@ class GKSIAS:
         lambdah = 1.0
         vartheta = 1.0/lambdah
 
+        # Stuff for cubic DP
+        beta0 = None
+        dp_cubic_n_iters = []
+
         for ii in progress_bar(range(n_iter)):
 
             # Update weights and get new QR factorization of W L V
@@ -444,21 +409,23 @@ class GKSIAS:
             WLV = W @ LV
             Q_WL, R_WL = qr(WLV, mode='economic') 
             
-            lambdah, fig = self.choose_lambdah_gcv(Q_A, R_A, R_WL, self.b, plotting=plotting, gcv_gamma=gcv_gamma, helping=helping)
-            if plotting:
-                pdf.savefig(fig)
-                plt.close(fig)
 
-            # # Select new regularization parameter
-            # if regparam == "gcv":
-            #     lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
-            # elif regparam == "dp":
-            #     lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
-            #     # fix delta to be 1, since we have already whitened in the begining
-            # else:
-            #     # Otherwise hope regparam is a value and hold equal to this
-            #     lambdah = regparam
+            # Select new regularization parameter
+            if regparam == "mgcv":
+                proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
+            elif regparam == "dp":
+                shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                try:
+                    data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
+                except:
+                    pass
+                proposed_lambdah = data["lambda"]
+                dp_cubic_n_iters.append(data["n_iters"])
+            else:
+                raise NotImplementedError
 
+            # Screen the proposed lambdah somehow? Just accept for now...
+            lambdah = proposed_lambdah
             lambda_history.append(lambdah)
             # Handle vartheta
             try:
@@ -466,6 +433,7 @@ class GKSIAS:
             except:
                 vartheta = np.inf
             vartheta_history.append(vartheta)
+            beta0 = 1.0/lambdah
 
             # Obtain new solution
             y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=None)
@@ -488,8 +456,6 @@ class GKSIAS:
             rb = self.L.T @ rb
             r = ra + lambdah * rb
             r = r - V @ (V.T @ r) # re-orthogonalize
-            #r = r - V @ (V.T @ r)
-            #normed_r = r / np.linalg.norm(r) 
             vn = r / np.linalg.norm(r)
             V = np.column_stack((V, vn))
             Avn = self.A @ vn
@@ -519,96 +485,11 @@ class GKSIAS:
             "lambda_history": np.asarray(lambda_history),
             "V": V,
             "cond_ests": np.asarray(cond_ests),
+            "dp_cubic_n_iters": np.asarray(dp_cubic_n_iters),
         }
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
 
-        if plotting:
-            pdf.close()
-
         return data
     
-
-
-    def choose_lambdah_gcv(self,Q_A, R_A, R_WL, b, gcv_gamma=0.1, plotting=False, helping=False, last_lambdah=None):
-        """Chooses a new lambdah parameter using cross validation. If plotting=True is passed,
-        also makes a plot of the GCV functional.
-        """
-
-        # Build objective function (in terms of log lambda)
-        #gcv_func = lambda log_reg_param: np.log( gcv_numerator(np.power(10, log_reg_param), Q_A, R_A, R_WL, b) ) - np.log( gcv_denominator(np.power(10,log_reg_param), R_A, R_WL, b ) ) 
-        #gcv_func = lambda log_reg_param: gcv_numerator(np.exp(log_reg_param), Q_A, R_A, R_WL, b) / gcv_denominator(np.exp(log_reg_param), R_A, R_WL, b)
-
-        def gcv_func(log_reg_param):
-            inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_WL.shape[0],R_A.T.shape[1]) ) ) ),rcond=None)
-            Z = R_A @ inverted
-            fac = gcv_gamma + (1.0 - gcv_gamma)*(1.0/R_A.shape[0])*np.trace( Z @ Z )
-            return np.log(fac) + np.log( gcv_numerator(np.power(10, log_reg_param), Q_A, R_A, R_WL, b) ) - np.log( np.abs( gcv_denominator(np.power(10,log_reg_param), R_A, R_WL, b ) ) ) 
-
-        # Compute a solution
-        log_lambdah_star = op.fminbound(func = gcv_func, x1 = -12, x2 = 12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
-        log_lambdah_star_eval = gcv_func(log_lambdah_star)
-        lambdah_star = np.power(10,log_lambdah_star)
-        
-        # If plotting?
-        fig = None
-        if plotting:
-            log_lambdahs = np.linspace(-12, 12, 100)
-            evals = []
-            for log_lambdah in log_lambdahs:
-                evals.append( gcv_func(log_lambdah) )
-
-            fig, axs = plt.subplots()
-
-            axs.plot(log_lambdahs, evals, linestyle='--', color='b') 
-            axs.scatter(log_lambdahs, evals, marker='x', color='b', label="Sample points") 
-            axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
-            axs.set_xlabel("$\\log_{10} \\lambda$")
-            axs.set_ylabel("$\\ln \\text{GCV}(\\lambda)$")
-            axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}")
-            axs.legend()
-
-            # Overwrite if a grid point is better?
-            if helping:
-                
-                min_idx = np.argmin(evals)
-                min_eval = np.amin(evals)
-                grid_opt_log_lambdah = log_lambdahs[min_idx]
-                if log_lambdah_star_eval > min_eval:
-                    axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}, overwrote!")
-                    log_lambdah_star = grid_opt_log_lambdah
-                    lambdah_star = np.power(10, log_lambdah_star)
-                    log_lambdah_star_eval = min_eval
-
-            axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
-            axs.legend()
-
-        # Finally, don't let lambdah move TOO much across the iterations
-
-        return lambdah_star, fig
-    
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

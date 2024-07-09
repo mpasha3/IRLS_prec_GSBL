@@ -1,0 +1,456 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.optimize as op
+
+from modified_gcv import gcv_numerator, gcv_denominator
+
+import matplotlib.pyplot as plt
+
+
+def find_last_local_min(arr):
+    # Ensure the input is a NumPy array
+    arr = np.asarray(arr)
+    
+    # Iterate from the end of the array to the beginning
+    for i in range(len(arr) - 2, 0, -1):
+        if arr[i] < arr[i - 1] and arr[i] < arr[i + 1]:
+            return i
+    
+    # Check the edge cases for the first and last elements
+    if len(arr) > 1 and arr[0] < arr[1]:
+        return 0
+    if len(arr) > 1 and arr[-1] < arr[-2]:
+        return len(arr) - 1
+    
+    # Return -1 if no local minimum is found
+    return -1
+
+
+
+def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
+    """Chooses a new lambdah parameter using cross validation. If plotting=True is passed,
+    also makes a plot of the GCV functional.
+    """
+
+    # Build objective function (in terms of log lambda)
+    def gcv_func(log_reg_param):
+        inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_WL.shape[0],R_A.T.shape[1]) ) ) ),rcond=None)
+        Z = R_A @ inverted
+        fac = gcv_gamma + (1.0 - gcv_gamma)*(1.0/R_A.shape[0])*np.trace( Z @ Z )
+        cond_est = np.amax(svals)/np.amin(svals)
+
+        numerator = gcv_numerator(np.power(10, log_reg_param), Q_A, R_A, R_WL, b)
+        denominator = gcv_denominator(np.power(10,log_reg_param), R_A, R_WL, b ) 
+
+        return np.log(fac) + np.log( numerator ) - np.log( denominator )
+
+    # Compute a solution
+    log_lambdah_star = op.fminbound(func = gcv_func, x1 = -12, x2 = 12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
+    log_lambdah_star_eval = gcv_func(log_lambdah_star)
+    lambdah_star = np.power(10,log_lambdah_star)
+
+    log_lambdahs = np.linspace(-12, 12, 100)
+    evals = []
+    for log_lambdah in log_lambdahs:
+        evals.append( gcv_func(log_lambdah) )
+
+
+    # Using the rightmost local minimizer criterion?
+    idx = find_last_local_min(evals)
+    log_lambdah_star = log_lambdahs[idx]
+    log_lambdah_star_eval = evals[idx]
+    lambdah_star = np.power(10, log_lambdah_star)
+
+    return lambdah_star
+
+
+
+def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, tol=1e-5, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+    """Implements an efficient cubically-convergent root-finder for finding a 
+    regularization parameter satisfying the discrepancy principle, for a problem
+    of the form
+
+        argmin_x (1.0/noise_var)*|| A x - b ||_2^2 + lambda*|| L x ||_2^2
+        
+    Each iteration requires the solution of 3 least-squares problems. We assume 
+    that A and L are passed as dense matrices. The method is guaranteed to converge 
+    under weak assumptions.
+
+    The optimization is done over beta in lambda = 1/beta, instead of lambda itself.
+    This guarantees monotonicity/convexity properties of the objective.
+    """
+
+    # Whiten the variables
+    A = (1.0/np.sqrt(noise_var))*A
+    b = (1.0/np.sqrt(noise_var))*b
+
+    # Misc
+    Atb = A.T @ b
+    if m is not None:
+        pass
+    else:
+        m = len(b)
+
+    if (beta0 is None) or (not warmstarting):
+        # Initialize at beta = 0, use analytic formulas for phi and its derivatives
+        beta = 0.0
+        phi = (np.linalg.norm(b)**2) - (eta**2)*m + shift
+        tmp, _, _, _ = np.linalg.lstsq(L.T, Atb, rcond=None)
+        phi_prime = -2*(np.linalg.norm(tmp)**2)
+        tmp2, _, _, _ = np.linalg.lstsq(L, tmp, rcond=None)
+        phi_prime_prime = 2*(np.linalg.norm(tmp2)**2)
+    else:
+        # Otherwise begin the iteration at the provided beta0
+        beta = beta0
+
+        ### Update phi and derivatives
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+        Axbeta = A @ xbeta
+        Lxbeta = L @ xbeta
+        phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+
+        # phi prime
+        term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
+        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+        #term2 = (2/(beta**2))*np.dot( QinvLtLxbeta, A.T @ Axbeta  )
+        AtAxbeta= A.T @ (Axbeta)
+        term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
+        phi_prime = term1 + term2
+        
+        # phi prime prime
+        term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
+        AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
+        term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+        QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]) , rcond=None  )
+        term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
+        term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
+        term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
+        term6 = +(4/(beta**3))*np.dot(Lxbeta, Lxbeta)
+        phi_prime_prime = term1 + term2 + term3 + term4 + term5 + term6
+
+    # Begin the iteration
+    beta_hist = [beta]
+    phi_hist = [phi]
+    n_iters = 0
+    for j in range(maxiter):
+
+        # Convergence criteria based on relative change in root
+        if j < 2:
+            pass
+        else:
+            if early_stopping:
+                if ((beta_hist[-1] - beta_hist[-2])/beta_hist[-2]) < tol:
+                    break
+
+        ### Take step
+        mu = beta + phi_prime/(2*phi_prime_prime)
+        alpha = 2*phi_prime*np.sqrt(beta - mu)
+        gamma = phi - alpha*np.sqrt(beta - mu)
+        beta = mu + ((gamma/alpha)**2)
+        beta_hist.append(beta)
+
+        ### Update phi and derivatives
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+        Axbeta = A @ xbeta
+        Lxbeta = L @ xbeta
+        phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+        phi_hist.append(phi)
+
+        # phi prime
+        term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
+        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+        #term2 = (2/(beta**2))*np.dot( QinvLtLxbeta, A.T @ Axbeta  )
+        AtAxbeta = A.T @ (Axbeta)
+        term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
+        phi_prime = term1 + term2
+        
+        # phi prime prime
+        term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
+        AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
+        term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+        QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]), rcond=None  )
+        term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
+        term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
+        term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
+        term6 = +(4/(beta**3))*np.dot(Lxbeta, Lxbeta)
+        phi_prime_prime = term1 + term2 + term3 + term4 + term5 + term6
+
+        # Increase counter
+        n_iters += 1
+
+  
+    data = {
+        "beta": beta,
+        "lambda": 1.0/beta,
+        "beta_hist": np.asarray(beta_hist),
+        "phi_hist": np.asarray(phi_hist),
+        "n_iters": n_iters,
+    }
+    
+    return data
+
+
+
+
+
+# def dp_cubic_old(A, L, b, noise_var, eta=1.025, maxiter=100, beta0=None, tol=1e-3, shift=0.0, m=None):
+#     """Implements an efficient cubically-convergent root-finder for finding a 
+#     regularization parameter satisfying the discrepancy principle, for a problem
+#     of the form
+
+#         argmin_x (1.0/noise_var)*|| A x - b ||_2^2 + lambda*|| L x ||_2^2
+        
+#     Each iteration requires the solution of 3 least-squares problems. We assume 
+#     that A and L are passed as dense matrices. The method is guaranteed to converge 
+#     under weak assumptions.
+
+#     The optimization is done over beta in lambda = 1/beta, instead of lambda itself.
+#     This guarantees convexity of the objective.
+
+#     shift: adds +shift to function that root-finding is applied to.
+#     m: 2-norm of error is assumed to be m*noise_var. Defaults to m=len(b).
+#     """
+
+#     # Whiten the variables
+#     A = (1.0/np.sqrt(noise_var))*A
+#     b = (1.0/np.sqrt(noise_var))*b
+
+#     # Misc
+#     Atb = A.T @ b
+#     if m is not None:
+#         pass
+#     else:
+#         m = len(b)
+
+#     if beta0 is None:
+#         # Initialize at beta = 0, use analytic formulas for phi and its derivatives
+#         beta = 0.0
+#         phi = (np.linalg.norm(b)**2) - (eta**2)*m + shift
+#         tmp, _, _, _ = np.linalg.lstsq(L.T, Atb, rcond=None)
+#         phi_prime = -2*(np.linalg.norm(tmp)**2)
+#         tmp2, _, _, _ = np.linalg.lstsq(L, tmp, rcond=None)
+#         phi_prime_prime = 2*(np.linalg.norm(tmp2)**2)
+#     else:
+#         # Otherwise begin the iteration at the provided beta0
+#         beta = beta0
+
+#         ### Update phi and derivatives
+#         xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+#         Axbeta = A @ xbeta
+#         Lxbeta = L @ xbeta
+#         phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+
+#         # phi prime
+#         term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
+#         QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  Lxbeta  ]) , rcond=None  )
+#         AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
+#         term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+#         phi_prime = term1 + term2
+        
+#         # phi prime prime
+#         term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
+#         term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+#         QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]) , rcond=None  )
+#         term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
+#         term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
+#         term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
+#         term6 = +(4/(beta**3))*np.dot(Lxbeta, Lxbeta)
+#         phi_prime_prime = term1 + term2 + term3 + term4 + term5 + term6
+
+#     # Begin the iteration
+#     beta_hist = [beta]
+#     phi_hist = [phi]
+#     n_iters = 0
+#     for j in range(maxiter):
+
+#         # Convergence criteria based on relative change in root
+#         if j < 2:
+#             pass
+#         else:
+#             if ((beta_hist[-1] - beta_hist[-2])/beta_hist[-2]) < tol:
+#                 break
+
+#         ### Take step
+#         mu = beta + phi_prime/(2*phi_prime_prime)
+#         alpha = 2*phi_prime*np.sqrt(beta - mu)
+#         gamma = phi - alpha*np.sqrt(beta - mu)
+#         beta = mu + ((gamma/alpha)**2)
+#         beta_hist.append(beta)
+#         print(beta)
+
+#         ### Update phi and derivatives
+#         xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+#         Axbeta = A @ xbeta
+#         Lxbeta = L @ xbeta
+#         phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+#         phi_hist.append(phi)
+
+#         # phi prime
+#         term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
+#         QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  Lxbeta  ]) , rcond=None  )
+#         AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
+#         term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+#         phi_prime = term1 + term2
+        
+#         # phi prime prime
+#         term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
+#         term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
+#         QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]), rcond=None  )
+#         term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
+#         term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
+#         term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
+#         term6 = +(4/(beta**3))*np.dot(Lxbeta, Lxbeta)
+#         phi_prime_prime = term1 + term2 + term3 + term4 + term5 + term6
+
+#         # Increase counter
+#         n_iters += 1
+
+#     data = {
+#         "beta": beta,
+#         "lambda": 1.0/beta,
+#         "beta_hist": np.asarray(beta_hist),
+#         "phi_hist": np.asarray(phi_hist),
+#         "n_iters": n_iters,
+#     }
+    
+#     return data
+
+
+
+
+
+
+
+
+
+#### OLD plotting codes for future reference
+
+
+
+
+# def discrepancy_principle(Q_A, R_A, R_WL, b, eta=1.01, last_lpoint=None):
+#     """Chooses a new lambdah parameter using discrepancy principle.
+#     """
+
+#     # We have already whitened Q_A and R_A!
+
+#     def dp_func(log_reg_param):
+
+#         try:
+#             # Evaluate tikhonov solution
+#             y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.concatenate((Q_A.T @ b, np.zeros((R_WL.shape[0],)))), rcond=None)
+
+#             #return np.linalg.norm( Q_A @ (R_A @ y) -  b, ord=2 )**2 - eta*Q_A.shape[0]
+#             #return (np.linalg.norm( (R_A @ y) -  (Q_A.T @ b), ord=2 )**2) - (eta*R_A.shape[0])
+            
+#             # Residual for the full-scale problem?
+#             term1 = np.linalg.norm( (R_A @ y) -  (Q_A.T @ b), ord=2 )**2
+#             term2 = np.linalg.norm( b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2
+#             #term2 = 0.0
+
+#             return term1 + term2 - eta*len(b)
+        
+#         except:
+
+#             return 1e10
+
+
+
+#     # Compute a solution
+#     #root_res = op.root_scalar(f = dp_func, x0=-10, x1=12, args=(), xtol=1e-6, maxiter=1000)
+#     root_res = op.bisect(f = dp_func, a=-15, b=15, args=(), xtol=1e-6, maxiter=1000)
+#     #root_res = dp_cubic(R_A, R_WL, Q_A.T @ b, noise_var=1.0, tol=1e-3, )
+
+#     # log_lambdah_star = root_res.root
+#     log_lambdah_star = root_res
+#     log_lambdah_star_eval = dp_func(log_lambdah_star)
+#     lambdah_star = np.power(10,log_lambdah_star)
+
+#     # If plotting?
+#     fig = None
+
+#     #log_lambdahs = np.linspace(-12, 12, 100)
+#     log_lambdahs = np.linspace( log_lambdah_star - 0.02, log_lambdah_star + 0.02, 100 )
+#     evals = []
+#     for log_lambdah in log_lambdahs:
+#         evals.append( dp_func(log_lambdah) )
+
+    # fig, axs = plt.subplots()
+
+    # axs.plot(log_lambdahs, evals, linestyle='--', color='b') 
+    # axs.scatter(log_lambdahs, evals, marker='x', color='b', label="Sample points") 
+    # axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
+    # axs.set_xlabel("$\\log_{10} \\lambda$")
+    # axs.set_ylabel("$\\text{DP}(\\lambda)$")
+    # axs.set_title(f"DP curve, eta = {eta}")
+
+    # # Also plot 0's
+    # tmp = np.zeros_like(log_lambdahs)
+    # axs.plot(log_lambdahs, tmp, color="black", ls="--")
+
+    # #axs.set_yscale("log")
+    
+    # # min_idx = np.argmin(evals)
+    # # min_eval = np.amin(evals)
+    # # grid_opt_log_lambdah = log_lambdahs[min_idx]
+    # # if log_lambdah_star_eval > min_eval:
+    # #     axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}, overwrote!")
+    # #     log_lambdah_star = grid_opt_log_lambdah
+    # #     lambdah_star = np.power(10, log_lambdah_star)
+    # #     log_lambdah_star_eval = min_eval
+
+    # # Using the rightmost local minimizer criterion?
+    # # idx = find_last_local_min(evals)
+    # # log_lambdah_star = log_lambdahs[idx]
+    # # log_lambdah_star_eval = evals[idx]
+    # # lambdah_star = np.power(10, log_lambdah_star)
+    # # axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="orange", label="Helped $\\lambda$")
+
+    # #axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
+    # axs.legend()
+
+    # Finally, don't let lambdah move TOO much across the iterations
+
+    #return lambdah_star, fig
+
+
+
+
+
+
+
+
+
+    # fig, axs = plt.subplots()
+
+    # axs.plot(log_lambdahs, evals, linestyle='--', color='b') 
+    # axs.scatter(log_lambdahs, evals, marker='x', color='b', label="Sample points") 
+    # axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
+    # axs.set_xlabel("$\\log_{10} \\lambda$")
+    # axs.set_ylabel("$\\ln \\text{GCV}(\\lambda)$")
+    # axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}")
+    # axs.legend()
+    
+    # min_idx = np.argmin(evals)
+    # min_eval = np.amin(evals)
+    # grid_opt_log_lambdah = log_lambdahs[min_idx]
+    # if log_lambdah_star_eval > min_eval:
+    #     axs.set_title(f"Modified GCV curve, gamma = {gcv_gamma}, overwrote!")
+    #     log_lambdah_star = grid_opt_log_lambdah
+    #     lambdah_star = np.power(10, log_lambdah_star)
+    #     log_lambdah_star_eval = min_eval
+
+    # Using the rightmost local minimizer criterion?
+    # idx = find_last_local_min(evals)
+    # log_lambdah_star = log_lambdahs[idx]
+    # log_lambdah_star_eval = evals[idx]
+    # lambdah_star = np.power(10, log_lambdah_star)
+    # axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="orange", label="Helped $\\lambda$")
+
+
+    #axs.scatter(log_lambdah_star, log_lambdah_star_eval, marker="o", color="red", label="Optimized $\\lambda$")
+    #axs.legend()
+
+    # Finally, don't let lambdah move TOO much across the iterations
+
+    #return lambdah_star, fig

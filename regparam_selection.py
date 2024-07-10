@@ -147,6 +147,7 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, tol=1e-5, earl
         alpha = 2*phi_prime*np.sqrt(beta - mu)
         gamma = phi - alpha*np.sqrt(beta - mu)
         beta = mu + ((gamma/alpha)**2)
+        #print(beta)
         beta_hist.append(beta)
 
         ### Update phi and derivatives

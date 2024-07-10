@@ -178,6 +178,9 @@ class RMMGKS:
                     data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
                 except:
                     pass
+                
+                #data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
+
                 proposed_lambdah = data["lambda"]
                 dp_cubic_n_iters.append(data["n_iters"])
             else:

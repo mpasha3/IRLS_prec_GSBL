@@ -17,10 +17,21 @@ import scipy.sparse as sps
 
 from fastprogress import progress_bar
 
+
+# Try to import matlab.engine
+try:
+    import matlab.engine
+except:
+    pass # assume we don't need it
+    # raise Exception("Error with matlab.engine, make sure it is installed correctly.")
+
+
+
 from trips.utilities.weights import smoothed_holder_weights
 
-#from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
-from regparam_selection import mgcv, dp_cubic
+from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
+from trips.utilities.reg_param.gcv import generalized_crossvalidation
+from regparam_selection import mgcv, dp_cubic, matlab_gcv
 
 
 
@@ -142,6 +153,11 @@ class MMGKS:
         beta0 = None
         dp_cubic_n_iters = []
 
+        # Start matlab engine if regparam == matlab_gcv
+        if regparam == "matlab_gcv":
+            # If this throws an error, it is because matlab engine is not set up correctly
+            _eng = matlab.engine.start_matlab()
+
         for ii in progress_bar(range(n_iter)):
 
             # Update weights and get new QR factorization of W L V
@@ -154,23 +170,35 @@ class MMGKS:
             
 
             # Select new regularization parameter
-            if regparam == "mgcv":
+            if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
-            elif regparam == "dp":
+            elif regparam == "dp": # Trips-Py dp
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
+            elif regparam == 'gcv': # Trips-Py gcv
+                proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
+            elif regparam == "dp3": # Jonathan's 3rd-order DP code
                 shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                # Hacky try-except block since code is not completely debugged for small \beta!
                 try:
                     data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
                 except:
                     pass
                 proposed_lambdah = data["lambda"]
                 dp_cubic_n_iters.append(data["n_iters"])
+            elif regparam == "matlab_gcv": # MATLAB GCV code
+                proposed_lambdah = matlab_gcv( R_A, R_WL, Q_A.T @ self.b, eng=_eng,  **kwargs)
+            elif np.isscalar(regparam): # hope that regparam is a scalar
+                proposed_lambdah = regparam
             else:
                 raise NotImplementedError
             
             # Screen the proposed lambdah somehow? Just accept for now...
             lambdah = proposed_lambdah
             lambda_history.append(lambdah)
-            beta0 = 1.0/lambdah
+            try:
+                beta0 = 1.0/lambdah
+            except:
+                beta0 = 1e10
 
             # Obtain new solution
             y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=None)
@@ -225,6 +253,9 @@ class MMGKS:
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
+
+        # Close engine if need to
+        if regparam == "matlab_gcv": _eng.close()
 
         return data
 
@@ -311,7 +342,7 @@ class GKSIAS:
 
     """
 
-    def __init__(self, A, L, b, noise_var=None):
+    def __init__(self, A, L, b, noise_var=None, whiten=True):
 
         # Bind
         self._A = A
@@ -390,12 +421,21 @@ class GKSIAS:
         # Get initial LV
         LV = self.L @ V
         tot_matvec_L += init_dim
-        lambdah = 1.0
+
+        if np.isscalar(regparam):
+            lambdah = regparam
+        else:
+            lambdah = 1.0
         vartheta = 1.0/lambdah
 
         # Stuff for cubic DP
         beta0 = None
         dp_cubic_n_iters = []
+
+        # Start matlab engine if regparam == matlab_gcv
+        if regparam == "matlab_gcv":
+            # If this throws an error, it is because matlab engine is not set up correctly
+            _eng = matlab.engine.start_matlab()
 
         for ii in progress_bar(range(n_iter)):
 
@@ -411,16 +451,25 @@ class GKSIAS:
             
 
             # Select new regularization parameter
-            if regparam == "mgcv":
+            if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
-            elif regparam == "dp":
+            elif regparam == "dp": # Trips-Py dp
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
+            elif regparam == 'gcv': # Trips-Py gcv
+                proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
+            elif regparam == "dp3": # Jonathan's 3rd-order DP code
                 shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                # Hacky try-except block since code is not completely debugged for small \beta!
                 try:
                     data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
                 except:
                     pass
                 proposed_lambdah = data["lambda"]
                 dp_cubic_n_iters.append(data["n_iters"])
+            elif regparam == "matlab_gcv": # MATLAB GCV code
+                proposed_lambdah = matlab_gcv( R_A, R_WL, Q_A.T @ self.b, eng=_eng,  **kwargs)
+            elif np.isscalar(regparam): # hope that regparam is a scalar
+                proposed_lambdah = regparam
             else:
                 raise NotImplementedError
 
@@ -433,7 +482,10 @@ class GKSIAS:
             except:
                 vartheta = np.inf
             vartheta_history.append(vartheta)
-            beta0 = 1.0/lambdah
+            try:
+                beta0 = 1.0/lambdah
+            except:
+                beta0 = 1e10
 
             # Obtain new solution
             y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=None)
@@ -490,6 +542,9 @@ class GKSIAS:
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
+
+        # Close engine if need to
+        if regparam == "matlab_gcv": _eng.close()
 
         return data
     

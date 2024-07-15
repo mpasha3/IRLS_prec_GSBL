@@ -6,8 +6,26 @@ from modified_gcv import gcv_numerator, gcv_denominator
 
 import matplotlib.pyplot as plt
 
+import os
+import sys
+
+# Try to import matlab.engine
+try:
+    import matlab.engine
+    
+    # Add the directory containing gcv.m to the MATLAB path
+    SCRIPT_DIR = os.path.join( os.path.dirname(os.path.abspath(__file__)), "mscripts" )
+
+except:
+    pass # assume we don't need it
+    # raise Exception("Error with matlab.engine, make sure it is installed correctly.")
+
+
+
 
 def find_last_local_min(arr):
+    """Helper function for finding the rightmost local minimima of GCV/MGCV.
+    """
     # Ensure the input is a NumPy array
     arr = np.asarray(arr)
     
@@ -191,7 +209,67 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, tol=1e-5, earl
     return data
 
 
+def matlab_gcv(A, L, b, eng=None, opt_upper_bound=200):
+    """Solves the GCV problem using MATLAB fminbnd.
 
+    eng: matlabengine instance, if have already started one. Otherwise starts and closes engine for computation.
+    """
+
+    # Start engine?
+    if eng is None:
+        eng_passed = False
+        eng = matlab.engine.start_matlab()
+    else:
+        eng_passed = True
+
+    # Add path to gcv function
+    eng.addpath( eng.genpath(SCRIPT_DIR), nargout=0)
+
+    # Cast to MATLAB
+    _A = matlab.double(A)
+    _L = matlab.double(L)
+    _b = matlab.double( b.reshape( (len(b), 1) ) )
+    _opt_upper_bound = matlab.double(opt_upper_bound)
+
+    # Call MATLAB GSVD
+    mu = eng.gcv(_A, _L, _b, _opt_upper_bound, nargout=1)
+
+    if eng_passed:
+        pass
+    else:
+        eng.close()
+
+
+    return mu
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### OLD code
 
 
 # def dp_cubic_old(A, L, b, noise_var, eta=1.025, maxiter=100, beta0=None, tol=1e-3, shift=0.0, m=None):

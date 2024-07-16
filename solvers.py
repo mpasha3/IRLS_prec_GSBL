@@ -173,7 +173,7 @@ class MMGKS:
             if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp": # Trips-Py dp
-                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), **kwargs)
             elif regparam == 'gcv': # Trips-Py gcv
                 proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp3": # Jonathan's 3rd-order DP code
@@ -454,7 +454,7 @@ class GKSIAS:
             if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp": # Trips-Py dp
-                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=1.0, **kwargs)
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), **kwargs)
             elif regparam == 'gcv': # Trips-Py gcv
                 proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp3": # Jonathan's 3rd-order DP code

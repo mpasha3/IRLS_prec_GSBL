@@ -31,7 +31,7 @@ from trips.utilities.weights import smoothed_holder_weights
 
 from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
 from trips.utilities.reg_param.gcv import generalized_crossvalidation
-from regparam_selection import mgcv, dp_cubic, matlab_gcv
+from regparam_selection import mgcv, dp_quadratic, dp_cubic, matlab_gcv
 
 
 
@@ -173,21 +173,33 @@ class MMGKS:
             if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp": # Trips-Py dp
-                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), **kwargs)
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), explicitProj=True, **kwargs)
             elif regparam == 'gcv': # Trips-Py gcv
                 proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
-            elif regparam == "dp3": # Jonathan's 3rd-order DP code
+            elif regparam == "dp2": # Jonathan's 2nd-order DP code. Requires 2 LS solves per iteration.
+                shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                # Hacky try-except block since code is not completely debugged for small \beta!
+                try:
+                    data = dp_quadratic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
+                except:
+                    # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                    data = dp_quadratic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=None, **kwargs)
+                    #pass
+                proposed_lambdah = data["lambda"]
+            elif regparam == "dp3": # Jonathan's 3rd-order DP code. Requires 3 LS solves per iteration.
                 shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
                 # Hacky try-except block since code is not completely debugged for small \beta!
                 try:
                     data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
                 except:
-                    pass
+                    # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                    data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=None, **kwargs)
+                    #pass
                 proposed_lambdah = data["lambda"]
                 dp_cubic_n_iters.append(data["n_iters"])
             elif regparam == "matlab_gcv": # MATLAB GCV code
                 proposed_lambdah = matlab_gcv( R_A, R_WL, Q_A.T @ self.b, eng=_eng,  **kwargs)
-            elif np.isscalar(regparam): # hope that regparam is a scalar
+            elif not isinstance(regparam, str): # hope that regparam is a scalar
                 proposed_lambdah = regparam
             else:
                 raise NotImplementedError
@@ -422,7 +434,7 @@ class GKSIAS:
         LV = self.L @ V
         tot_matvec_L += init_dim
 
-        if np.isscalar(regparam):
+        if not isinstance(regparam, str):
             lambdah = regparam
         else:
             lambdah = 1.0
@@ -449,30 +461,41 @@ class GKSIAS:
             WLV = W @ LV
             Q_WL, R_WL = qr(WLV, mode='economic') 
             
-
             # Select new regularization parameter
             if regparam == "mgcv": # Jonathan's MGCV method
                 proposed_lambdah = mgcv(Q_A, R_A, R_WL, self.b, **kwargs)
             elif regparam == "dp": # Trips-Py dp
-                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), **kwargs)
+                proposed_lambdah = discrepancy_principle(Q_A, R_A, R_WL, self.b, delta=np.sqrt(self.m), explicitProj=True, **kwargs)
             elif regparam == 'gcv': # Trips-Py gcv
                 proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_WL, self.b, **kwargs)
-            elif regparam == "dp3": # Jonathan's 3rd-order DP code
+            elif regparam == "dp2": # Jonathan's 2nd-order DP code. Requires 2 LS solves per iteration.
+                shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+                # Hacky try-except block since code is not completely debugged for small \beta!
+                try:
+                    data = dp_quadratic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
+                except:
+                    # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                    data = dp_quadratic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=None, **kwargs)
+                    #pass
+                proposed_lambdah = data["lambda"]
+            elif regparam == "dp3": # Jonathan's 3rd-order DP code. Requires 3 LS solves per iteration.
                 shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ self.b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
                 # Hacky try-except block since code is not completely debugged for small \beta!
                 try:
                     data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=beta0, **kwargs)
                 except:
-                    pass
+                    # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                    data = dp_cubic(R_A, R_WL, Q_A.T @ self.b, noise_var=1.0, shift=shift, m=len(self.b), beta0=None, **kwargs)
+                    #pass
                 proposed_lambdah = data["lambda"]
                 dp_cubic_n_iters.append(data["n_iters"])
             elif regparam == "matlab_gcv": # MATLAB GCV code
                 proposed_lambdah = matlab_gcv( R_A, R_WL, Q_A.T @ self.b, eng=_eng,  **kwargs)
-            elif np.isscalar(regparam): # hope that regparam is a scalar
+            elif not isinstance(regparam, str): # hope that regparam is a scalar
                 proposed_lambdah = regparam
             else:
                 raise NotImplementedError
-
+            
             # Screen the proposed lambdah somehow? Just accept for now...
             lambdah = proposed_lambdah
             lambda_history.append(lambdah)

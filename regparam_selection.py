@@ -1,8 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize as op
+import warnings
 
 from modified_gcv import gcv_numerator, gcv_denominator
+
+from scipy.misc import derivative
+from scipy.optimize import root_scalar
 
 import matplotlib.pyplot as plt
 
@@ -52,7 +56,7 @@ def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
 
     # Build objective function (in terms of log lambda)
     def gcv_func(log_reg_param):
-        inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_WL.shape[0],R_A.T.shape[1]) ) ) ),rcond=None)
+        inverted, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt( np.power(10, log_reg_param) ) * R_WL)), np.vstack( (  np.eye( R_A.T.shape[1] )  , np.zeros((R_WL.shape[0],R_A.T.shape[1]) ) ) ),rcond=-1)
         Z = R_A @ inverted
         fac = gcv_gamma + (1.0 - gcv_gamma)*(1.0/R_A.shape[0])*np.trace( Z @ Z )
         cond_est = np.amax(svals)/np.amin(svals)
@@ -85,7 +89,7 @@ def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
 
 
 
-def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+def dp_quadratic(A, L, b, noise_var, eta=1.05, maxiter=25, beta0=None, beta_min=1e-8, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True, err_norm_sq=None):
     """Implements an efficient quadratically-convergent (Newton's method) root-finder for finding a 
     regularization parameter satisfying the discrepancy principle, for a problem
     of the form
@@ -103,6 +107,7 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
     # Whiten the variables
     A = (1.0/np.sqrt(noise_var))*A
     b = (1.0/np.sqrt(noise_var))*b
+    if err_norm_sq is not None: err_norm_sq = err_norm_sq/noise_var
 
     # Misc
     Atb = A.T @ b
@@ -110,6 +115,23 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
         pass
     else:
         m = len(b)
+
+
+    # If err_norm_sq is passed, print whether or not we satisfy || x_0 - b ||_2^2 < (eta**2)*err_norm_sq - shift < || b ||_2^2.
+    if err_norm_sq is not None:
+        # Get x_0 
+        tmp, _, _, _ = np.linalg.lstsq(A, b)
+        #tmp = np.linalg.pinv(A) @ b
+        lhs = (np.linalg.norm( (A @ tmp) - b)**2)
+        rhs = np.linalg.norm(b)**2
+        inside = ((eta**2)*err_norm_sq) - shift
+        check1 = lhs <= inside
+        check2 = inside <= rhs
+        if check1 and check2:
+            pass
+        else:
+            warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
+
 
     if (beta0 is None) or (not warmstarting):
         # Initialize at beta = 0, use analytic formulas for phi and its derivatives
@@ -124,14 +146,14 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
         beta = beta0
 
         ### Update phi and derivatives
-        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=-1  )
         Axbeta = A @ xbeta
         Lxbeta = L @ xbeta
         phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
 
         # phi prime
         term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
-        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=-1  )
         #term2 = (2/(beta**2))*np.dot( QinvLtLxbeta, A.T @ Axbeta  )
         AtAxbeta= A.T @ (Axbeta)
         term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
@@ -149,7 +171,7 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
     else: # otherwise do the iteration
 
         for j in range(maxiter):
-
+    
             # Convergence criteria based on relative change in root
             if j < 2:
                 pass
@@ -164,6 +186,7 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
 
             ### Take step
             beta = beta - (phi/phi_prime)
+            beta = max(beta, beta_min)
             beta_hist.append(beta)
 
             ### Update phi and derivatives
@@ -175,7 +198,7 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
 
             # phi prime
             term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
-            QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+            QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=-1  )
             #term2 = (2/(beta**2))*np.dot( QinvLtLxbeta, A.T @ Axbeta  )
             AtAxbeta = A.T @ (Axbeta)
             term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
@@ -199,7 +222,7 @@ def dp_quadratic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5,
 
 
 
-def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+def dp_cubic(A, L, b, noise_var, eta=1.05, maxiter=50, beta0=None, beta_min=1e-8, rtol=1e-6, atol=1e-16, early_stopping=True, shift=0.0, m=None, warmstarting=True, err_norm_sq=None, xker=None):
     """Implements an efficient cubically-convergent root-finder for finding a 
     regularization parameter satisfying the discrepancy principle, for a problem
     of the form
@@ -212,11 +235,14 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
 
     The optimization is done over beta in lambda = 1/beta, instead of lambda itself.
     This guarantees monotonicity/convexity properties of the objective.
+
+    eq_norm_sq will be "whitened" according to noise_var.
     """
 
     # Whiten the variables
     A = (1.0/np.sqrt(noise_var))*A
     b = (1.0/np.sqrt(noise_var))*b
+    if err_norm_sq is not None: err_norm_sq = err_norm_sq/noise_var
 
     # Misc
     Atb = A.T @ b
@@ -225,27 +251,46 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
     else:
         m = len(b)
 
+    # If err_norm_sq is passed, print whether or not we satisfy || x_0 - b ||_2^2 < (eta**2)*err_norm_sq - shift < || b ||_2^2.
+    if err_norm_sq is not None:
+        # Get x_0 
+        tmp, _, _, _ = np.linalg.lstsq(A, b, rcond=-1)
+        #tmp = np.linalg.pinv(A) @ b
+        lhs = (np.linalg.norm( (A @ tmp) - b)**2)
+        rhs = np.linalg.norm(b - A @ xker)**2
+        inside = ((eta**2)*err_norm_sq) - shift
+        check1 = lhs <= inside
+        check2 = inside <= rhs
+        # print(lhs)
+        # print(inside)
+        # print(rhs)
+        if check1 and check2:
+            pass
+        else:
+            warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
+
+
     if (beta0 is None) or (not warmstarting):
         # Initialize at beta = 0, use analytic formulas for phi and its derivatives
         beta = 0.0
         phi = (np.linalg.norm(b)**2) - (eta**2)*m + shift
-        tmp, _, _, _ = np.linalg.lstsq(L.T, Atb, rcond=None)
+        tmp, _, _, _ = np.linalg.lstsq(L.T, Atb, rcond=-1)
         phi_prime = -2*(np.linalg.norm(tmp)**2)
-        tmp2, _, _, _ = np.linalg.lstsq(L, tmp, rcond=None)
+        tmp2, _, _, _ = np.linalg.lstsq(L, tmp, rcond=-1)
         phi_prime_prime = 2*(np.linalg.norm(tmp2)**2)
     else:
         # Otherwise begin the iteration at the provided beta0
         beta = beta0
 
         ### Update phi and derivatives
-        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=-1  )
         Axbeta = A @ xbeta
         Lxbeta = L @ xbeta
         phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
 
         # phi prime
         term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
-        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+        QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=-1  )
         AtAxbeta= A.T @ (Axbeta)
         term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
         phi_prime = term1 + term2
@@ -254,7 +299,7 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
         term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
         AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
         term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
-        QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]) , rcond=None  )
+        QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]) , rcond=-1  )
         term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
         term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
         term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
@@ -291,11 +336,17 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
             alpha = 2*phi_prime*np.sqrt(beta - mu)
             gamma = phi - alpha*np.sqrt(beta - mu)
             beta = mu + ((gamma/alpha)**2)
+            beta = max(beta, beta_min)
             #print(beta)
             beta_hist.append(beta)
 
             ### Update phi and derivatives
-            xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=None  )
+            # print(beta)
+            # print(np.linalg.matrix_rank(A))
+            # print(np.linalg.matrix_rank(np.sqrt(1.0/beta)*L))
+            # print(np.linalg.matrix_rank(np.vstack([ A, np.sqrt(1.0/beta)*L ])))
+            # print()
+            xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=-1  )
             Axbeta = A @ xbeta
             Lxbeta = L @ xbeta
             phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
@@ -303,7 +354,7 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
 
             # phi prime
             term1 = - (2/(beta**2))*(np.linalg.norm(Lxbeta)**2)
-            QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=None  )
+            QinvLtLxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Lxbeta  ]) , rcond=-1  )
             #term2 = (2/(beta**2))*np.dot( QinvLtLxbeta, A.T @ Axbeta  )
             AtAxbeta = A.T @ (Axbeta)
             term2 = (2/(beta**2))*np.dot(QinvLtLxbeta, AtAxbeta )
@@ -313,7 +364,7 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
             term1 = -(2/(beta**4))*np.dot( QinvLtLxbeta, L.T @ Lxbeta )
             AtAQinvLtLxbeta = A.T @ (A @ QinvLtLxbeta)
             term2 = (2/(beta**4))*np.dot(QinvLtLxbeta, AtAQinvLtLxbeta )
-            QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]), rcond=None  )
+            QinvAtAxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ Axbeta, np.zeros(L.shape[0]) ]), rcond=-1  )
             term3 =  (4/(beta**4))*np.dot( L @ QinvAtAxbeta, L @ QinvLtLxbeta )
             term4 = -(2/(beta**4))*np.dot( L @ xbeta, L @ QinvLtLxbeta )
             term5 = -(4/(beta**3))*np.dot(QinvAtAxbeta, L.T @ Lxbeta)
@@ -326,6 +377,7 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
   
     data = {
         "beta": beta,
+        "xbeta": xbeta,
         "lambda": 1.0/beta,
         "beta_hist": np.asarray(beta_hist),
         "phi_hist": np.asarray(phi_hist),
@@ -333,6 +385,380 @@ def dp_cubic(A, L, b, noise_var, eta=1.0, maxiter=25, beta0=None, rtol=1e-5, ato
     }
     
     return data
+
+
+
+
+
+
+def dp_val(A, L, b, noise_var, eta=1.05, maxiter=25, beta0=None, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+    """Implements an efficient cubically-convergent root-finder for finding a 
+    regularization parameter satisfying the discrepancy principle, for a problem
+    of the form
+
+        argmin_x (1.0/noise_var)*|| A x - b ||_2^2 + lambda*|| L x ||_2^2
+        
+    Each iteration requires the solution of 3 least-squares problems. We assume 
+    that A and L are passed as dense matrices. The method is guaranteed to converge 
+    under weak assumptions.
+
+    The optimization is done over beta in lambda = 1/beta, instead of lambda itself.
+    This guarantees monotonicity/convexity properties of the objective.
+    """
+
+    # print(eta)
+    # print(noise_var)
+    # print(m)
+    # print(shift)
+
+    # Whiten the variables
+    A = (1.0/np.sqrt(noise_var))*A
+    b = (1.0/np.sqrt(noise_var))*b
+
+    # Misc
+    Atb = A.T @ b
+    if m is not None:
+        pass
+    else:
+        m = len(b)
+
+
+    def _phi(beta):
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=-1  )
+        Axbeta = A @ xbeta
+        Lxbeta = L @ xbeta
+        phi = (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+        return phi
+    
+    result = root_scalar(_phi, bracket=(1e-12, 1e10))
+    beta = result.root
+    xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*L ]), np.hstack([ b, np.zeros(L.shape[0]) ]) , rcond=-1  )
+    
+    data = {
+        "beta": beta,
+        "xbeta": xbeta,
+        "lambda": 1.0/beta,
+        "beta_hist": None,
+        "phi_hist": None,
+        "n_iters": None,
+    }
+    
+    return data
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def dp_cubic_standard(A, b, c, noise_var, eta=1.1, maxiter=25, beta0=None, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+    """
+    """
+
+    # Whiten the variables
+    A = (1.0/np.sqrt(noise_var))*A
+    b = (1.0/np.sqrt(noise_var))*b
+    c = (1.0/np.sqrt(noise_var))*c
+    
+    # Misc
+    Atb = A.T @ b
+    AAtb = A @ Atb
+    Atc = A.T @ c
+    I = np.eye(A.shape[1])
+    if m is not None:
+        pass
+    else:
+        m = len(b)
+
+    if (beta0 is None) or (not warmstarting):
+        # Initialize at beta = 0, use analytic formulas for phi and its derivatives
+        beta = 0.0
+        phi = (np.linalg.norm(c)**2) - (eta**2)*m + shift
+        phi_prime = -2*np.dot( Atb, Atc )
+        phi_prime_prime = 2*np.dot(AAtb, AAtb)
+        print(f"Starting with beta = {beta}")
+    else:
+        # Otherwise begin the iteration at the provided beta0
+        beta = beta0
+        print(f"Starting with beta = {beta}")
+
+        ### Update phi and derivatives
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ b, np.zeros(I.shape[0]) ]) , rcond=-1  )
+        Axbeta = A @ xbeta
+        phi = (np.linalg.norm( Axbeta - c )**2) - (eta**2)*m + shift
+
+        # phi prime
+        Qinvxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*xbeta  ]) , rcond=-1  )
+        diff = Axbeta - c
+        AQinvxbeta = A @ Qinvxbeta
+        phi_prime = (2/(beta**2))*np.dot( AQinvxbeta, diff)
+
+        # phi prime prime
+        QinvQinvxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Qinvxbeta  ]) , rcond=-1  )
+        AQinvQinvxbeta = A @ QinvQinvxbeta
+        term1 = (4/(beta**4))*np.dot(AQinvQinvxbeta, Axbeta)
+        term2 = -(4/(beta**3))*np.dot( AQinvxbeta, Axbeta )
+        term3 = (2/(beta**4))*np.dot(AQinvxbeta, AQinvxbeta)
+        term4 = -(4/(beta**4))*np.dot( QinvQinvxbeta, Atc )
+        term5 = (4/(beta**3))*np.dot( Qinvxbeta, Atc )
+        phi_prime_prime = term1 + term2 + term3 + term4 + term5
+
+
+    # Setup for iteration
+    beta_hist = [beta]
+    phi_hist = [phi]
+    n_iters = 0
+
+    # Check if we already satisfy the absolute tolerance criteria?
+    if np.abs(phi) < atol:
+        pass
+    else: # otherwise do the iteration
+
+        for j in range(maxiter):
+
+            # Convergence criteria based on relative change in root
+            if j < 2:
+                pass
+            else:
+                if early_stopping:
+
+                    if ((beta_hist[-1] - beta_hist[-2])/beta_hist[-2]) < rtol:
+                        break
+
+                    if np.abs(phi) < atol:
+                        break
+
+            ### Take step
+            mu = beta + phi_prime/(2*phi_prime_prime)
+            alpha = 2*phi_prime*np.sqrt(beta - mu)
+            gamma = phi - alpha*np.sqrt(beta - mu)
+            beta = mu + ((gamma/alpha)**2)
+            print(beta)
+            beta_hist.append(beta)
+
+            ### Update phi and derivatives
+            xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ b, np.zeros(I.shape[0]) ]) , rcond=-1  )
+            Axbeta = A @ xbeta
+            phi = (np.linalg.norm( Axbeta - c )**2) - (eta**2)*m + shift
+
+            # phi prime
+            Qinvxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*xbeta  ]) , rcond=-1  )
+            diff = Axbeta - c
+            AQinvxbeta = A @ Qinvxbeta
+            phi_prime = (2/(beta**2))*np.dot( AQinvxbeta, diff)
+
+            # phi prime prime
+            QinvQinvxbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ np.zeros(A.shape[0]),  np.sqrt(beta)*Qinvxbeta  ]) , rcond=-1  )
+            AQinvQinvxbeta = A @ QinvQinvxbeta
+            term1 = (4/(beta**4))*np.dot(AQinvQinvxbeta, Axbeta)
+            term2 = -(4/(beta**3))*np.dot( AQinvxbeta, Axbeta )
+            term3 = (2/(beta**4))*np.dot(AQinvxbeta, AQinvxbeta)
+            term4 = -(4/(beta**4))*np.dot( QinvQinvxbeta, Atc )
+            term5 = (4/(beta**3))*np.dot( Qinvxbeta, Atc )
+            phi_prime_prime = term1 + term2 + term3 + term4 + term5
+
+            # Increase counter
+            n_iters += 1
+
+  
+    data = {
+        "beta": beta,
+        "xbeta": xbeta,
+        "lambda": 1.0/beta,
+        "beta_hist": np.asarray(beta_hist),
+        "phi_hist": np.asarray(phi_hist),
+        "n_iters": n_iters,
+    }
+    
+    return data
+
+
+
+
+
+
+
+def dp_cubic_standard_val(A, b, c, noise_var, eta=1.1, order=3, dx=1e-3, maxiter=25, beta0=None, rtol=1e-5, atol=1e-10, early_stopping=True, shift=0.0, m=None, warmstarting=True):
+    """
+    """
+
+    # Whiten the variables
+    A = (1.0/np.sqrt(noise_var))*A
+    b = (1.0/np.sqrt(noise_var))*b
+    c = (1.0/np.sqrt(noise_var))*c
+    b = c
+
+    # Misc
+    Atb = A.T @ b
+    AAtb = A @ Atb
+    Atc = A.T @ c
+    I = np.eye(A.shape[1])
+    if m is not None:
+        pass
+    else:
+        m = len(b)
+
+    # Build func
+    def _phi(beta):
+        xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ b, np.zeros(I.shape[0]) ]) , rcond=-1  )
+        Axbeta = A @ xbeta
+        return (np.linalg.norm(Axbeta - b)**2) - (eta**2)*m + shift
+
+    result = root_scalar(_phi, bracket=(1e-10, 1e10))
+    beta = result.root
+
+    data = {
+        "beta": beta,
+        "lambda": 1.0/beta,
+        "beta_hist": np.asarray([1]),
+        "phi_hist": np.asarray([1]),
+        "n_iters": 1,
+    }
+
+    return data
+    
+        
+
+    # if (beta0 is None) or (not warmstarting):
+    #     # Initialize at beta = 0, use analytic formulas for phi and its derivatives
+    #     beta = 0.0
+    #     phi = (np.linalg.norm(c)**2) - (eta**2)*m + shift
+    #     phi_prime = -2*np.dot( Atb, Atc )
+    #     phi_prime_prime = 2*np.dot(AAtb, AAtb)
+    #     print(f"Starting with beta = {beta}")
+    # else:
+    #     # Otherwise begin the iteration at the provided beta0
+    #     beta = beta0
+    #     print(f"Starting with beta = {beta}")
+
+    #     ### Update phi and derivatives
+    #     xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ b, np.zeros(I.shape[0]) ]) , rcond=None  )
+    #     Axbeta = A @ xbeta
+    #     phi = (np.linalg.norm( Axbeta - c )**2) - (eta**2)*m + shift
+
+    #     # phi prime
+    #     phi_prime = derivative(_phi, x0=beta, order=order, dx=dx, n=1)
+
+    #     # phi prime prime
+    #     phi_prime_prime = derivative(_phi, x0=beta, order=order, dx=dx, n=2)
+
+
+    # # Setup for iteration
+    # beta_hist = [beta]
+    # phi_hist = [phi]
+    # n_iters = 0
+
+    # # Check if we already satisfy the absolute tolerance criteria?
+    # if np.abs(phi) < atol:
+    #     pass
+    # else: # otherwise do the iteration
+
+    #     for j in range(maxiter):
+
+    #         # Convergence criteria based on relative change in root
+    #         if j < 2:
+    #             pass
+    #         else:
+    #             if early_stopping:
+
+    #                 if ((beta_hist[-1] - beta_hist[-2])/beta_hist[-2]) < rtol:
+    #                     break
+
+    #                 if np.abs(phi) < atol:
+    #                     break
+
+    #         ### Take step
+    #         mu = beta + phi_prime/(2*phi_prime_prime)
+    #         alpha = 2*phi_prime*np.sqrt(beta - mu)
+    #         gamma = phi - alpha*np.sqrt(beta - mu)
+    #         beta = mu + ((gamma/alpha)**2)
+    #         print(beta)
+    #         beta_hist.append(beta)
+
+    #         ### Update phi and derivatives
+    #         xbeta, _, _, _ = np.linalg.lstsq( np.vstack([ A, np.sqrt(1.0/beta)*I ]), np.hstack([ b, np.zeros(I.shape[0]) ]) , rcond=None  )
+    #         Axbeta = A @ xbeta
+    #         phi = (np.linalg.norm( Axbeta - c )**2) - (eta**2)*m + shift
+
+    #         # phi prime
+    #         phi_prime = derivative(_phi, x0=beta, order=order, dx=dx, n=1)
+
+    #         # phi prime prime
+    #         phi_prime_prime = derivative(_phi, x0=beta, order=order, dx=dx, n=2)
+
+    #         # Increase counter
+    #         n_iters += 1
+
+  
+    # data = {
+    #     "beta": beta,
+    #     "lambda": 1.0/beta,
+    #     "beta_hist": np.asarray(beta_hist),
+    #     "phi_hist": np.asarray(phi_hist),
+    #     "n_iters": n_iters,
+    # }
+    
+    # return data
+
+
+
+
+
+
+
+
 
 
 

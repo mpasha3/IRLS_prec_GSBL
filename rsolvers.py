@@ -117,7 +117,7 @@ class RMMGKS:
         _, _, Wh = svds(H, k=kmin-1)
         W = Wh.T
 
-        # Get new basis
+        # Get new basisX
         Vtilde = V @ W
         xnew = x -  Vtilde @ (Vtilde.T @ x)
         xnew /= np.linalg.norm(xnew)
@@ -130,7 +130,7 @@ class RMMGKS:
         return V
     
 
-    def solve(self, n_iter=100, init_dim=10, kmin=10, kmax=40, q=1.0, epsilon=1e-2, regparam="dp", x0=None, x_true=None, **kwargs):
+    def solve(self, n_iter=100, init_dim=10, kmin=10, kmax=40, q=1.0, epsilon=1e-2, regparam="dp", x0=None, x_true=None, regparam_fixed=None, **kwargs):
         """Driver for MMGKS solver.
         """
         assert kmin <= (init_dim + 2), "must have kmin >= init_dim+2 in this implementation"
@@ -488,7 +488,7 @@ class RIASGKS:
         return V
     
 
-    def solve(self, n_iter=100, init_dim=10, kmin=10, kmax=40, hyperpr_r=-1.0, hyperpr_beta=1.0, regparam="dp", x0=None, x_true=None, **kwargs):
+    def solve(self, n_iter=100, init_dim=10, kmin=10, kmax=40, hyperpr_r=-1.0, regparam_fixed=None, hyperpr_beta=1.0, regparam="dp", x0=None, x_true=None, **kwargs):
         """Driver for MMGKS solver.
         """
 
@@ -524,11 +524,13 @@ class RIASGKS:
         LV = self.L @ V
         tot_matvec_L += init_dim
       
-        if not isinstance(regparam, str):
-            lambdah = regparam
+        if regparam_fixed is None:
+            vartheta = 1.0
         else:
-            lambdah = 1.0
-        vartheta = 1.0/lambdah
+            vartheta = 1.0/regparam_fixed
+        lambdah = 1.0/vartheta
+        
+
 
 
         # Stuff for cubic DP

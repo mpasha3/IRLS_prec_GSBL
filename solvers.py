@@ -400,7 +400,7 @@ class GKSIAS:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, hyperpr_r=-1.0, hyperpr_beta=1.0, regparam="dp", x0=None, x_true=None,  **kwargs):
+    def solve(self, n_iter=25, init_dim=5, hyperpr_r=-1.0, hyperpr_beta=1.0, regparam_fixed=None, regparam="dp", x0=None, x_true=None,  **kwargs):
         """Driver for MMGKS solver.
         """
 
@@ -434,11 +434,12 @@ class GKSIAS:
         LV = self.L @ V
         tot_matvec_L += init_dim
 
-        if not isinstance(regparam, str):
-            lambdah = regparam
+        # Initialize vartheta
+        if regparam_fixed is None:
+            vartheta = 1.0
         else:
-            lambdah = 1.0
-        vartheta = 1.0/lambdah
+            vartheta = 1.0/regparam_fixed
+        lambdah = 1.0/vartheta
 
         # Stuff for cubic DP
         beta0 = None

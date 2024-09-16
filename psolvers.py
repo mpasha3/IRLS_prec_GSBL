@@ -252,7 +252,6 @@ def PGKSIAS(A, b, L, W=None, hyperpr_r=-1.0, hyperpr_beta=1.0, shift_scale=1.0, 
         # Misc
         eta = 1.01
 
-
         ### Check if DP problem solution exists?
         shift = np.linalg.norm(c - (Q_Atilde @ Q_Atilde.T @ c) )**2
         tmp, _, _, _ = np.linalg.lstsq(R_Atilde, Q_Atilde.T @ c, rcond=-1)
@@ -269,7 +268,6 @@ def PGKSIAS(A, b, L, W=None, hyperpr_r=-1.0, hyperpr_beta=1.0, shift_scale=1.0, 
             pass
         else:
             warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
-
 
 
 

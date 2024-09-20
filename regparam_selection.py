@@ -91,7 +91,7 @@ def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
 
 
 
-def dp_cubic(A, L, b, noise_var, eta=1.05, maxiter=50, beta0=None, beta_min=1e-8, rtol=1e-6, atol=1e-16, early_stopping=True, shift=0.0, m=None, warmstarting=True, err_norm_sq=None, xker=None):
+def dp_cubic(A, L, b, noise_var, eta=1.05, maxiter=50, beta0=None, beta_min=1e-8, beta_max=1e8, rtol=1e-6, atol=1e-16, early_stopping=True, shift=0.0, m=None, warmstarting=True, err_norm_sq=None, xker=None):
     """Implements an efficient cubically-convergent root-finder for finding a 
     regularization parameter satisfying the discrepancy principle, for a problem
     of the form
@@ -243,6 +243,9 @@ def dp_cubic(A, L, b, noise_var, eta=1.05, maxiter=50, beta0=None, beta_min=1e-8
             # Increase counter
             n_iters += 1
 
+    # Enforce minimum and maximum beta
+    beta = max(beta, beta_min)
+    beta = min(beta, beta_max)
   
     data = {
         "beta": beta,

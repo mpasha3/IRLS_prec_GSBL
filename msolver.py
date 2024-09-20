@@ -102,43 +102,71 @@ class GKSSolver:
         V = qr_fac.Q
 
         return V
+
+    def build_priorconditioning_initial_basis(self, Atilde, c, lambdah, dim):
+        """
+        Builds the initial basis for the priorconditioned algorithm.
+        """
+
+        Atildetc = Atilde.T @ c
+
+        V = np.zeros((Atilde.shape[1], dim))
+        V[:,0] = Atildetc
+        tmp = Atildetc
+        for j in range(1,dim):
+            # print(j)
+            # print(tmp)
+            tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
+            tmp = tmp/np.linalg.norm(tmp)
+            V[:,j] = tmp.copy()
+
+        # V = np.random.normal(size=(self.n, 5))
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
     
 
-    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, eng=None, **regparam_kwargs):
+    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, **regparam_kwargs):
         """Selects regularization parameter for the projected problem.
         """
 
+        if c is None:
+            c = b
+
         # Select new regularization parameter
         if regparam == "mgcv": # Jonathan's MGCV method
-            proposed_lambdah = mgcv(Q_A, R_A, R_L, b, **regparam_kwargs)
+            proposed_lambdah = mgcv(Q_A, R_A, R_L, c, **regparam_kwargs)
         elif regparam == "dp": # Trips-Py dp
-            proposed_lambdah = discrepancy_principle(Q_A, R_A, R_L, b, delta=np.sqrt(self.m), explicitProj=True, **regparam_kwargs)
+            proposed_lambdah = discrepancy_principle(Q_A, R_A, R_L, c, delta=np.sqrt(self.m), explicitProj=True, **regparam_kwargs)
         elif regparam == 'gcv': # Trips-Py gcv
-            proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_L, b, **regparam_kwargs)
+            proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_L, c, **regparam_kwargs)
         elif regparam == "dp2": # Jonathan's 2nd-order DP code. Requires 2 LS solves per iteration.
-            shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+            shift = np.linalg.norm( b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
             # Hacky try-except block since code is not completely debugged for small \beta!
             try:
-                data = dp_quadratic(R_A, R_L, Q_A.T @ b, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
+                data = dp_quadratic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
             except:
                 # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
-                data = dp_quadratic(R_A, R_L, Q_A.T @ b, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
+                data = dp_quadratic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
                 #pass
             proposed_lambdah = data["lambda"]
             self.beta0 = 1.0/proposed_lambdah
         elif regparam == "dp3": # Jonathan's 3rd-order DP code. Requires 3 LS solves per iteration.
-            shift = np.linalg.norm( self.b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+            shift = np.linalg.norm( b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
             # Hacky try-except block since code is not completely debugged for small \beta!
             try:
-                data = dp_cubic(R_A, R_L, Q_A.T @ b, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
+                data = dp_cubic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
             except:
                 # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
-                data = dp_cubic(R_A, R_L, Q_A.T @ b, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
+                data = dp_cubic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
                 #pass
             proposed_lambdah = data["lambda"]
             self.beta0 = 1.0/proposed_lambdah
         elif regparam == "matlab_gcv": # MATLAB GCV code
-            proposed_lambdah = matlab_gcv( R_A, R_L, Q_A.T @ b, eng=eng, **regparam_kwargs)
+            proposed_lambdah = matlab_gcv( R_A, R_L, Q_A.T @ c, eng=eng, **regparam_kwargs)
         elif not isinstance(regparam, str): # hope that regparam is a scalar
             proposed_lambdah = regparam
         else:
@@ -172,7 +200,7 @@ class GKSSolver:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, **kwargs):
         """Driver for GKS solver.
         """
 
@@ -211,7 +239,10 @@ class GKSSolver:
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
 
         # Build initial basis and QR factor of AV
-        V = self.build_initial_basis(init_dim)
+        if Vinit is None: 
+            V = self.build_initial_basis(init_dim)
+        else:
+            V = Vinit.copy()
         dim_size = init_dim
         tot_matvec_A += (2*(init_dim - 1)) + 1 
         AV = self.A @ V 
@@ -244,21 +275,25 @@ class GKSSolver:
             W = sps.diags(w)
             WLV = W @ LV
             Q_WL, R_WL = qr(WLV, mode='economic') 
-
+            
             # Select new regularization parameter
             proposed_lambdah = self.select_regparam(Q_A, R_A, Q_WL, R_WL, self.b, regparam=regparam, eng=_eng, **regparam_kwargs)
-            
+          
+            lambdah = max(lambdah_min, proposed_lambdah)
+            lambdah = min(lambdah_max, lambdah)
+            print(lambdah)
+
             # Screen the proposed lambdah somehow? Just accept for now...
-            print(proposed_lambdah)
-            lambdah = proposed_lambdah
+            #print(proposed_lambdah)
+            #lambdah = proposed_lambdah
             lambda_history.append(lambdah)
             try:
                 beta0 = 1.0/lambdah
             except:
                 beta0 = 1e10
-
+            
             # Obtain new solution
-            y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=None)
+            y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_WL)), np.concatenate((Q_A.T @ self.b, np.zeros((R_WL.shape[0],)))), rcond=-1)        
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
             x = V @ y
@@ -316,7 +351,6 @@ class GKSSolver:
                 Q_A, R_A = qr(AV, mode='economic')
 
 
-
         # Package output
         data = {
             "x": x,
@@ -340,7 +374,7 @@ class GKSSolver:
         
 
 
-    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
+    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
         """Driver for GKS solver.
         """
         valid_regparams = ["dp3", "dp"]
@@ -385,13 +419,12 @@ class GKSSolver:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
 
-
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
         Lpinv = self.Lpinv_factory(w)
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
-            Lopinv = ( jlinops.IdentityOperator( (self.A.shape[0], self.A.shape[0])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
+            Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
             Atilde = self.A @ Lopinv
         else:
             Atilde = self.A @ Lpinv
@@ -405,7 +438,9 @@ class GKSSolver:
         c = self.b - Axker
 
         # Build initial basis
-        (U, B, V) = golub_kahan(Atilde, c, init_dim, False, **kwargs) 
+        
+        V = self.build_priorconditioning_initial_basis(Atilde, c, lambdah, init_dim)
+        #(U, B, V) = golub_kahan(Atilde, c, init_dim, False, **kwargs) 
         qr_fac = np.linalg.qr(V)
         V = qr_fac.Q
         if self.K is None:
@@ -433,7 +468,7 @@ class GKSSolver:
             # Build new Atilde
             Lpinv = self.Lpinv_factory(w)
             if self.K is not None:
-                Lopinv = ( jlinops.IdentityOperator( (self.A.shape[0], self.A.shape[0])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
+                Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
                 Atilde = self.A @ Lopinv
             else:
                 Atilde = self.A @ Lpinv
@@ -476,14 +511,22 @@ class GKSSolver:
             # Select new regularization parameter
             proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, **regparam_kwargs)
             
+            lambdah = max(lambdah_min, proposed_lambdah)
+            lambdah = min(lambdah_max, lambdah)
+            print(lambdah)
+
             # Screen the proposed lambdah somehow? Just accept for now...
-            print(proposed_lambdah)
-            lambdah = proposed_lambdah
+            #print(proposed_lambdah)
+            #proposed_lambdah = max(proposed_lambdah, 1e-8)
+            #lambdah = proposed_lambdah
             lambda_history.append(lambdah)
             try:
                 self.beta0 = 1.0/lambdah
             except:
                 self.beta0 = 1e10
+                
+            self.beta0 = None
+
 
             y, _ , _, svals = np.linalg.lstsq(np.vstack( (R_Atilde, np.sqrt(lambdah) * np.eye(R_Atilde.shape[1])) ), np.concatenate((Q_Atilde.T @ c, np.zeros((R_L.shape[0],)))),rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
@@ -501,9 +544,9 @@ class GKSSolver:
             u = LV @ y
             ra = (AtildeV @ y - c) # should this be b or c?
             ra = Atilde.T @ ra
-            rb = w*(LV @ y)
+            rb = LV @ y # is this wrong?
+            #rb = w*(LV @ y)
             # rb = (LV @ y) * wr
-            rb = rb
             r = ra + lambdah * rb
             r = r - V @ (V.T @ r)
             r = r - V @ (V.T @ r)
@@ -557,6 +600,12 @@ class GKSSolver:
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
 
+        if self.K is not None:
+            data["Lopinv"] = Lopinv
+        else:
+            data["Lopinv"] = None
+        data["Lpinv"] = Lpinv
+ 
         # Close engine if need to
         if regparam == "matlab_gcv": _eng.close()
 
@@ -577,7 +626,7 @@ class MMGKS(GKSSolver):
 
     def update_weights(self, Lx, lambdah, weight_params):
         
-        w = smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] )
+        w = np.sqrt( smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
 
         return w
 
@@ -606,7 +655,7 @@ class VanillaGKS(GKSSolver):
         super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K)
 
 
-    def update_weights(self, Lx, weight_params):
+    def update_weights(self, Lx, lambdah, weight_params):
 
         return np.ones_like(Lx)
     

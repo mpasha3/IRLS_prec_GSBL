@@ -90,6 +90,31 @@ def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
 
 
 
+def optimal_regparam(R_A, R_L, Q_A, Q_L, b, V, x_true):
+    """Tries to select the regularization parameter optimally given the true solution.
+    """
+
+    # Solution evaluation function
+    def _x_lambda_full_scale(lambdah):
+
+        y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_L)), np.concatenate((Q_A.T @ b, np.zeros((R_L.shape[0],)))), rcond=-1)        
+        
+        return V @ y
+    
+    # Error from true solution
+    _obj_fn = lambda lambdah: np.linalg.norm(x_true - _x_lambda_full_scale(lambdah) )**2
+
+    opt_lambdah = op.fminbound(func = _obj_fn, x1 = 1e-12, x2 = 1e12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
+
+    return opt_lambdah
+
+
+
+
+
+
+
+
 
 def dp_cubic(A, L, b, noise_var, eta=1.05, maxiter=50, beta0=None, beta_min=1e-8, beta_max=1e8, rtol=1e-6, atol=1e-16, early_stopping=True, shift=0.0, m=None, warmstarting=True, err_norm_sq=None, xker=None):
     """Implements an efficient cubically-convergent root-finder for finding a 

@@ -22,6 +22,7 @@ import warnings
 
 import scipy.optimize as op
 from scipy.sparse.linalg import svds
+from scipy.linalg import null_space
 
 
 # Try to import matlab.engine
@@ -37,10 +38,35 @@ from trips.utilities.decompositions import golub_kahan
 
 from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
 from trips.utilities.reg_param.gcv import generalized_crossvalidation
+
 from regparam_selection import mgcv, dp_cubic, matlab_gcv
+from regparam_selection import optimal_regparam
 
 
+def compute_V_matrix_k(A, k):
+    """
+    Computes the matrix V from the Singular Value Decomposition (SVD) of matrix A
+    and returns only the first k columns of V.
+    
+    A = U * Σ * V^T
 
+    Parameters:
+    A (ndarray): Input matrix.
+    k (int): Number of columns to return from matrix V.
+
+    Returns:
+    V_k (ndarray): The first k columns of the right singular vectors of A.
+    """
+    # Perform SVD
+    U, Sigma, Vt = np.linalg.svd(A)
+    
+    # V is the transpose of Vt
+    V = Vt.T
+    
+    # Return only the first k columns of V
+    V_k = V[:, :k]
+    
+    return V_k
 
 
 
@@ -102,6 +128,29 @@ class GKSSolver:
         V = qr_fac.Q
 
         return V
+    
+
+    def build_restarted_basis(self, dim, x, w, lambdah):
+        """
+        Builds the restarted basis.
+        """
+        Atb = self.A.T @ self.b
+
+        V = np.zeros((self.n, dim))
+        V[:,0] = Atb
+        tmp = Atb.copy()
+        for j in range(1,dim):
+            tmp = (self.A.T @ (self.A @ tmp)) + lambdah*(self.L.T @ (w * (w * (self.L @ tmp ) ) ) )
+            V[:,j] = tmp.copy()
+
+        V = np.column_stack([V, x])
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
+    
 
     def build_priorconditioning_initial_basis(self, Atilde, c, lambdah, dim):
         """
@@ -116,7 +165,8 @@ class GKSSolver:
         for j in range(1,dim):
             # print(j)
             # print(tmp)
-            tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
+            tmp = Atilde.T @ (Atilde @ tmp)
+            #tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
             tmp = tmp/np.linalg.norm(tmp)
             V[:,j] = tmp.copy()
 
@@ -129,7 +179,7 @@ class GKSSolver:
         return V
     
 
-    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, **regparam_kwargs):
+    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, xker=None, x_true=None, V=None, priorconditioning=False, **regparam_kwargs):
         """Selects regularization parameter for the projected problem.
         """
 
@@ -167,6 +217,14 @@ class GKSSolver:
             self.beta0 = 1.0/proposed_lambdah
         elif regparam == "matlab_gcv": # MATLAB GCV code
             proposed_lambdah = matlab_gcv( R_A, R_L, Q_A.T @ c, eng=eng, **regparam_kwargs)
+        elif regparam == "optimal":
+            assert x_true is not None, "Must provide x_true to use optimal regparam method."
+            assert V is not None, "Must pass V to use optimal regparam method."
+            if not priorconditioning:
+                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, self.b, V, x_true, **regparam_kwargs)
+            else:
+                assert xker is not None, "Must pass xker."
+                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, c, V, self.L @ ( x_true - xker ), **regparam_kwargs)
         elif not isinstance(regparam, str): # hope that regparam is a scalar
             proposed_lambdah = regparam
         else:
@@ -180,17 +238,29 @@ class GKSSolver:
         """
 
         # Make H matrix
+        print(R_A.shape)
+        print(R_L.shape)
         H = np.vstack([R_A, np.sqrt(lambdah)*R_L ])
+        print(H.shape)
 
         # Truncated SVD
-        _, _, Wh = svds(H, k=kmin-1)
-        W = Wh.T
+        # _, _, Wh = svds(H, k=kmin-1)
+        # W = Wh.T
+        W = compute_V_matrix_k(H, kmin-1 )
 
         # Get new basis
         Vtilde = V @ W
+        assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+        #qr_fac = np.linalg.qr(Vtilde)
+        #Vtilde = qr_fac.Q
+
+        print(np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ))
+        assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+
         xnew = x -  Vtilde @ (Vtilde.T @ x)
         xnew /= np.linalg.norm(xnew)
         V = np.column_stack((Vtilde, xnew))
+        assert np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) ) < 1e-10, "New basis is not a basis"
 
         # Orthogonalize
         qr_fac = np.linalg.qr(V)
@@ -200,7 +270,7 @@ class GKSSolver:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, regparam_kwargs={}, **kwargs):
         """Driver for GKS solver.
         """
 
@@ -211,6 +281,9 @@ class GKSSolver:
         residual_history = []
         rre_history = []
         cond_ests = []
+        dp_ineq_lhs = []
+        dp_ineq_rhs = []
+        dp_ineq_chs = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -227,12 +300,24 @@ class GKSSolver:
             assert min_dim is not None, "Must pass min_dim for recycling..."
             recycling = True
 
+        # Are we restarting?
+        restarting = False
+        if restart_dim is not None:
+            restarting = True
+            assert not (restarting and recycling), "Can't do both restarting and recycling, currently..."
+
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
             tot_matvec_A += 1
         else:
             x = x0
+
+        if xker is not None:
+            c = self.b - (self.A @ xker)
+
+        if err_norm_sq is None:
+            err_norm_sq = len(self.b)
 
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
@@ -275,9 +360,37 @@ class GKSSolver:
             W = sps.diags(w)
             WLV = W @ LV
             Q_WL, R_WL = qr(WLV, mode='economic') 
+
+            eta = 1.01
+            if xker is not None:
+                shift = np.linalg.norm(self.b - (Q_A @ Q_A.T @ self.b) )**2
+                tmp, _, _, _ = np.linalg.lstsq(R_A, Q_A.T @ self.b, rcond=-1)
+                #tmp = np.linalg.pinv(A) @ b
+                lhs = (np.linalg.norm( (R_A @ tmp) - (Q_A.T @ self.b) )**2)
+                dp_ineq_lhs.append(lhs)
+
+                # Get reduced oblique pinv to get the rhs
+                Kreduced = null_space(Q_WL)
+                if Kreduced.shape[1] == 0:
+                    rhs = np.linalg.norm(Q_A.T @ self.b)
+                else:
+                    tmp, _, _, _ = np.linalg.lstsq( Q_A @ Kreduced, Q_A.T @ self.b, rcond=-1 )
+                    creduced = Kreduced @ tmp
+                    rhs = np.linalg.norm(creduced)**2
+                dp_ineq_rhs.append(rhs)
+
+                inside = ((eta**2)*err_norm_sq) - shift
+                dp_ineq_chs.append(inside)
+                check1 = lhs <= inside
+                check2 = inside <= rhs
+                if check1 and check2:
+                    pass
+                else:
+                    warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
+
             
             # Select new regularization parameter
-            proposed_lambdah = self.select_regparam(Q_A, R_A, Q_WL, R_WL, self.b, regparam=regparam, eng=_eng, **regparam_kwargs)
+            proposed_lambdah = self.select_regparam(Q_A, R_A, Q_WL, R_WL, self.b, regparam=regparam, eng=_eng, V=V, x_true=x_true, priorconditioning=False, **regparam_kwargs)
           
             lambdah = max(lambdah_min, proposed_lambdah)
             lambdah = min(lambdah_max, lambdah)
@@ -331,24 +444,51 @@ class GKSSolver:
 
             # If dim_size == kmax, need to compress the basis
             if (dim_size == max_dim) and recycling:
-
+                
                 # Update weights and get new QR factorization of W L V
                 LV = self.L @ V
                 tot_matvec_L += dim_size
                 WLV = W @ LV
                 Q_WL, R_WL = qr(WLV, mode='economic') 
-                Q_L, R_L = qr(LV, mode='economic') 
+                #Q_L, R_L = qr(LV, mode='economic') 
                 
                 # New basis
-                V = self.compress_basis(V, R_A, R_WL, x, Q_A, min_dim, lambdah)
+                V = self.compress_basis(V.copy(), R_A, R_WL, x, Q_A, min_dim, lambdah)
+                x = V @ (V.T @ x)
                 
-                # Solve the problem over the new basis
+                # Other 
                 dim_size = min_dim
                 AV = self.A @ V 
                 LV = self.L @ V
                 tot_matvec_A += dim_size
                 tot_matvec_L += dim_size
                 Q_A, R_A = qr(AV, mode='economic')
+
+            if (dim_size == restart_dim) and restarting:
+                
+                # Reset method with initial basis based on current x
+                # Lx = self.L @ x
+                # tot_matvec_L += 1
+                # w = self.update_weights(Lx, lambdah, weight_params)
+                # V = self.build_restarted_basis(init_dim, x, w, lambdah)
+                # dim_size = init_dim
+
+                # # Reset basis
+                tmp = x.copy()
+                tmp /= np.linalg.norm(tmp)
+                V = tmp.copy()
+                V = V[:,None]
+                dim_size = 1
+                
+                # Update weights and get new QR factorization of W L V
+                LV = self.L @ V
+                tot_matvec_L += dim_size
+                AV = self.A @ V 
+                tot_matvec_A += dim_size
+                #WLV = W @ LV
+                #Q_WL, R_WL = qr(WLV, mode='economic') 
+                Q_A, R_A = qr(AV, mode='economic')
+
 
 
         # Package output
@@ -362,6 +502,9 @@ class GKSSolver:
             "lambda_history": np.asarray(lambda_history),
             "V": V,
             "cond_ests": np.asarray(cond_ests),
+            "dp_ineq_lhs": np.asarray(dp_ineq_lhs),
+            "dp_ineq_rhs": np.asarray(dp_ineq_rhs),
+            "dp_ineq_chs": np.asarray(dp_ineq_chs),
         }
 
         if x_true is not None:
@@ -392,6 +535,9 @@ class GKSSolver:
         residual_history = []
         rre_history = []
         cond_ests = []
+        dp_ineq_lhs = []
+        dp_ineq_rhs = []
+        dp_ineq_chs = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -495,21 +641,22 @@ class GKSSolver:
             tmp, _, _, _ = np.linalg.lstsq(R_Atilde, Q_Atilde.T @ c, rcond=-1)
             #tmp = np.linalg.pinv(A) @ b
             lhs = (np.linalg.norm( (R_Atilde @ tmp) - (Q_Atilde.T @ c) )**2)
+            dp_ineq_lhs.append(lhs)
             rhs = np.linalg.norm( Q_Atilde.T @ c)**2
+            dp_ineq_rhs.append(rhs)
             inside = ((eta**2)*err_norm_sq) - shift
+            dp_ineq_chs.append(inside)
             check1 = lhs <= inside
             check2 = inside <= rhs
-            # print(lhs)
-            # print(inside)
-            # print(rhs)
             if check1 and check2:
                 pass
             else:
                 warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
 
 
+
             # Select new regularization parameter
-            proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, **regparam_kwargs)
+            proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, c=c, V=V, x_true=x_true, xker=xker, priorconditioning=True, **regparam_kwargs)
             
             lambdah = max(lambdah_min, proposed_lambdah)
             lambdah = min(lambdah_max, lambdah)
@@ -595,6 +742,10 @@ class GKSSolver:
             "lambda_history": np.asarray(lambda_history),
             "V": V,
             "cond_ests": np.asarray(cond_ests),
+            "dp_ineq_lhs": np.asarray(dp_ineq_lhs),
+            "dp_ineq_rhs": np.asarray(dp_ineq_rhs),
+            "dp_ineq_chs": np.asarray(dp_ineq_chs),
+            "xker": xker,
         }
 
         if x_true is not None:

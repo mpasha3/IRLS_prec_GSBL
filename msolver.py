@@ -257,11 +257,11 @@ class GKSSolver:
 
         # Get new basis
         Vtilde = V @ W
-        assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
-        #qr_fac = np.linalg.qr(Vtilde)
-        #Vtilde = qr_fac.Q
+        #assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+        qr_fac = np.linalg.qr(Vtilde)
+        Vtilde = qr_fac.Q
 
-        print(np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ))
+        #print(np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ))
         assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
 
         xnew = x -  Vtilde @ (Vtilde.T @ x)
@@ -337,8 +337,17 @@ class GKSSolver:
             V = Vinit.copy()
         dim_size = init_dim
         tot_matvec_A += (2*(init_dim - 1)) + 1 
+
+        # If we passed x0, add it to the basis as another column.
+        if x0 is not None:
+            vnew = x0 - (V @ V.T @ x0)
+            vnew /= np.linalg.norm(vnew)
+            V = np.column_stack((V, vnew))
+            dim_size += 1
+            print("Augmented basis with initial guess!")
+
         AV = self.A @ V 
-        tot_matvec_A += init_dim
+        tot_matvec_A += V.shape[1]
         Q_A, R_A = qr(AV, mode='economic') 
 
         # Get initial LV
@@ -581,6 +590,7 @@ class GKSSolver:
             Atilde = self.A @ Lopinv
         else:
             Atilde = self.A @ Lpinv
+            Lopinv = Lpinv
 
         if self.K is not None:
             xker = self.K @ (AKpinv @ self.b)
@@ -600,6 +610,16 @@ class GKSSolver:
             tot_matvec_A += 2*init_dim
         else:
             tot_matvec_A += 4*init_dim
+
+        # If x0 is passed, augment initial basis
+        if x0 is not None:
+            # tmp = x0 - xker
+            tmp = self.L @ (Lopinv @ (self.L @ x0)) # implied initialization in transformed space
+            vnew = tmp - (V @ (V.T @ tmp) )
+            vnew /= np.linalg.norm(vnew)
+            V = np.column_stack((V, vnew))
+            #dim_size += 1
+            print("Augmented basis with initial guess!")
 
         # For cubic dp
         self.beta0 = None

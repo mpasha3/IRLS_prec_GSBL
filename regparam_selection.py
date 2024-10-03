@@ -8,6 +8,8 @@ from modified_gcv import gcv_numerator, gcv_denominator
 from scipy.misc import derivative
 from scipy.optimize import root_scalar
 
+from skimage.metrics import structural_similarity
+
 import matplotlib.pyplot as plt
 
 import os
@@ -90,7 +92,7 @@ def mgcv(Q_A, R_A, R_WL, b, gcv_gamma=0.1):
 
 
 
-def optimal_regparam(R_A, R_L, Q_A, Q_L, b, V, x_true):
+def optimal_regparam(R_A, R_L, Q_A, Q_L, b, V, x_true, Lopinv=None, xker=None):
     """Tries to select the regularization parameter optimally given the true solution.
     """
 
@@ -102,11 +104,40 @@ def optimal_regparam(R_A, R_L, Q_A, Q_L, b, V, x_true):
         return V @ y
     
     # Error from true solution
-    _obj_fn = lambda lambdah: np.linalg.norm(x_true - _x_lambda_full_scale(lambdah) )**2
+    if (Lopinv is None) and (xker is None):
+        _obj_fn = lambda lambdah: np.linalg.norm(x_true - _x_lambda_full_scale(lambdah) )**2
+    else:
+        _obj_fn = lambda lambdah: np.linalg.norm(x_true - ( (Lopinv @ _x_lambda_full_scale(lambdah)) + xker) )**2
 
     opt_lambdah = op.fminbound(func = _obj_fn, x1 = 1e-12, x2 = 1e12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
 
     return opt_lambdah
+
+
+def optimal_regparam_ssim(R_A, R_L, Q_A, Q_L, b, V, x_true, Lopinv=None, xker=None):
+    """Tries to select the regularization parameter optimally given the true solution.
+    """
+
+    # Solution evaluation function
+    def _x_lambda_full_scale(lambdah):
+
+        y, _ , _, svals = np.linalg.lstsq(np.concatenate((R_A, np.sqrt(lambdah) * R_L)), np.concatenate((Q_A.T @ b, np.zeros((R_L.shape[0],)))), rcond=-1)        
+        
+        return V @ y
+    
+    # Error from true solution
+    if (Lopinv is None) and (xker is None):
+        #_obj_fn = lambda lambdah: -structural_similarity(x_true - _x_lambda_full_scale(lambdah) )
+        _obj_fn = lambda lambdah: -structural_similarity( _x_lambda_full_scale(lambdah), x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False )
+    else:
+        #_obj_fn = lambda lambdah: -structural_similarityx_true - ( (Lopinv @ _x_lambda_full_scale(lambdah)) + xker) )**2
+        _obj_fn = lambda lambdah: -structural_similarity( (Lopinv @ _x_lambda_full_scale(lambdah) ) + xker, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False )
+
+    opt_lambdah = op.fminbound(func = _obj_fn, x1 = 1e-12, x2 = 1e12, args=(), xtol=1e-12, maxfun=1000, full_output=0, disp=0) ## should there be tol here?
+
+    return opt_lambdah
+
+
 
 
 

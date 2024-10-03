@@ -9,7 +9,6 @@ import jlinops
 
 from matplotlib.backends.backend_pdf import PdfPages
 
-
 from scipy.linalg import qr, qr_insert
 from scipy.integrate import odeint
 import scipy.optimize as op
@@ -40,7 +39,7 @@ from trips.utilities.reg_param.discrepancy_principle import discrepancy_principl
 from trips.utilities.reg_param.gcv import generalized_crossvalidation
 
 from regparam_selection import mgcv, dp_cubic, matlab_gcv
-from regparam_selection import optimal_regparam
+from regparam_selection import optimal_regparam, optimal_regparam_ssim
 
 
 def compute_V_matrix_k(A, k):
@@ -179,7 +178,7 @@ class GKSSolver:
         return V
     
 
-    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, xker=None, x_true=None, V=None, priorconditioning=False, **regparam_kwargs):
+    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, xker=None, x_true=None, V=None, priorconditioning=False, Lopinv=None, **regparam_kwargs):
         """Selects regularization parameter for the projected problem.
         """
 
@@ -224,7 +223,15 @@ class GKSSolver:
                 proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, self.b, V, x_true, **regparam_kwargs)
             else:
                 assert xker is not None, "Must pass xker."
-                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, c, V, self.L @ ( x_true - xker ), **regparam_kwargs)
+                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, c, V, x_true, Lopinv=Lopinv, xker=xker, **regparam_kwargs)
+        elif regparam == "optimal_ssim":
+            assert x_true is not None, "Must provide x_true to use optimal regparam method."
+            assert V is not None, "Must pass V to use optimal regparam method."
+            if not priorconditioning:
+                proposed_lambdah = optimal_regparam_ssim(R_A, R_L, Q_A, Q_L, self.b, V, x_true, **regparam_kwargs)
+            else:
+                assert xker is not None, "Must pass xker."
+                proposed_lambdah = optimal_regparam_ssim(R_A, R_L, Q_A, Q_L, c, V, x_true, Lopinv=Lopinv, xker=xker, **regparam_kwargs)
         elif not isinstance(regparam, str): # hope that regparam is a scalar
             proposed_lambdah = regparam
         else:
@@ -618,6 +625,7 @@ class GKSSolver:
                 Atilde = self.A @ Lopinv
             else:
                 Atilde = self.A @ Lpinv
+                Lopinv = Lpinv
 
             # Get new QR factorization for Atilde
             AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
@@ -654,9 +662,8 @@ class GKSSolver:
                 warnings.warn("Inequality is NOT satisfied, no solution to the DP problem...", UserWarning)
 
 
-
             # Select new regularization parameter
-            proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, c=c, V=V, x_true=x_true, xker=xker, priorconditioning=True, **regparam_kwargs)
+            proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, c=c, V=V, x_true=x_true, xker=xker, priorconditioning=True, Lopinv=Lopinv, **regparam_kwargs)
             
             lambdah = max(lambdah_min, proposed_lambdah)
             lambdah = min(lambdah_max, lambdah)

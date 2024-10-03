@@ -23,6 +23,8 @@ import scipy.optimize as op
 from scipy.sparse.linalg import svds
 from scipy.linalg import null_space
 
+from skimage.metrics import structural_similarity
+
 
 # Try to import matlab.engine
 try:
@@ -77,7 +79,7 @@ class GKSSolver:
 
     """
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None):
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
         # Bind
         self._A = A
@@ -89,6 +91,7 @@ class GKSSolver:
         self.n = A.shape[1]
         self.m = A.shape[0]
         self.k = L.shape[0]
+        self.img_shape = img_shape
 
         # Whiten?
         if self.noise_var is not None:
@@ -287,6 +290,7 @@ class GKSSolver:
         lambda_history = []
         residual_history = []
         rre_history = []
+        ssim_history = []
         cond_ests = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
@@ -329,6 +333,10 @@ class GKSSolver:
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+            if self.img_shape is None:
+                ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+            else:
+                ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
 
         # Build initial basis and QR factor of AV
         if Vinit is None: 
@@ -427,7 +435,12 @@ class GKSSolver:
             cond_ests.append(cond_est)
             x = V @ y
 
-            if x_true is not None: rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+            if x_true is not None: 
+                rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+                if self.img_shape is None:
+                    ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                else:
+                    ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
 
             # if ii >= R_WL.shape[0]:
             #     break
@@ -525,6 +538,7 @@ class GKSSolver:
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
+            data["ssim_history"] = np.asarray(ssim_history)
 
         # Close engine if need to
         if regparam == "matlab_gcv": _eng.close()
@@ -550,6 +564,7 @@ class GKSSolver:
         lambda_history = []
         residual_history = []
         rre_history = []
+        ssim_history = []
         cond_ests = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
@@ -580,6 +595,10 @@ class GKSSolver:
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+            if self.img_shape is None:
+                ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+            else:
+                ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
 
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
@@ -711,7 +730,12 @@ class GKSSolver:
             else:
                 x = Lpinv @ z
 
-            if x_true is not None: rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+            if x_true is not None: 
+                rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+                if self.img_shape is None:
+                    ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                else:
+                    ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
        
             v = AtildeV @ y
             v = v - c # should this be b or c?
@@ -777,6 +801,7 @@ class GKSSolver:
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
+            data["ssim_history"] = np.asarray(ssim_history)
 
         if self.K is not None:
             data["Lopinv"] = Lopinv
@@ -792,14 +817,14 @@ class GKSSolver:
 
 
 
-    
+
 
 
 class MMGKS(GKSSolver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None):
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K)
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):
@@ -812,9 +837,9 @@ class MMGKS(GKSSolver):
 
 class IASGKS(GKSSolver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None):
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K)
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):
@@ -828,9 +853,9 @@ class IASGKS(GKSSolver):
 
 class VanillaGKS(GKSSolver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None):
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K)
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):

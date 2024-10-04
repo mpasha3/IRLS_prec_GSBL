@@ -547,7 +547,7 @@ class GKSSolver:
         
 
 
-    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
+    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
         """Driver for GKS solver.
         """
         valid_regparams = ["dp3", "dp"]
@@ -584,6 +584,12 @@ class GKSSolver:
         if max_dim is not None:
             assert min_dim is not None, "Must pass min_dim for recycling..."
             recycling = True
+
+        # Are we restarting?
+        restarting = False
+        if restart_dim is not None:
+            restarting = True
+            assert not (restarting and recycling), "Can't do both restarting and recycling, currently..."
 
         # Initialization
         if x0 is None:
@@ -629,6 +635,7 @@ class GKSSolver:
             tot_matvec_A += 2*init_dim
         else:
             tot_matvec_A += 4*init_dim
+        dim_size = V.shape[1]
 
         # If x0 is passed, augment initial basis
         if x0 is not None:
@@ -752,11 +759,25 @@ class GKSSolver:
             vn = r / np.linalg.norm(r)
             V = np.column_stack((V, vn))
             residual_history.append(la.norm(r))
+            dim_size += 1
 
             if self.K is None:
                 tot_matvec_A += 2*(V.shape[1]-1)
             else:
                 tot_matvec_A += 4*(V.shape[1]-1)
+
+
+            # Restarting
+            if (dim_size == restart_dim) and restarting:
+
+                # Reset basis
+                tmp = z.copy()
+                tmp /= np.linalg.norm(tmp)
+                V = tmp.copy()
+                V = V[:,None]
+                dim_size = 1
+                
+
 
             
 

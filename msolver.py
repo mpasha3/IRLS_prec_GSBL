@@ -348,7 +348,7 @@ class GKSSolver:
 
         # If we passed x0, add it to the basis as another column.
         if x0 is not None:
-            vnew = x0 - (V @ V.T @ x0)
+            vnew = x0 - (V @ (V.T @ x0) )
             vnew /= np.linalg.norm(vnew)
             V = np.column_stack((V, vnew))
             dim_size += 1
@@ -357,6 +357,7 @@ class GKSSolver:
         AV = self.A @ V 
         tot_matvec_A += V.shape[1]
         Q_A, R_A = qr(AV, mode='economic') 
+        
 
         # Get initial LV
         LV = self.L @ V
@@ -387,7 +388,7 @@ class GKSSolver:
 
             eta = 1.01
             if xker is not None:
-                shift = np.linalg.norm(self.b - (Q_A @ Q_A.T @ self.b) )**2
+                shift = np.linalg.norm(self.b - (Q_A @ (Q_A.T @ self.b ) ) )**2
                 tmp, _, _, _ = np.linalg.lstsq(R_A, Q_A.T @ self.b, rcond=-1)
                 #tmp = np.linalg.pinv(A) @ b
                 lhs = (np.linalg.norm( (R_A @ tmp) - (Q_A.T @ self.b) )**2)
@@ -598,6 +599,7 @@ class GKSSolver:
         else:
             x = x0
 
+
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
@@ -605,6 +607,7 @@ class GKSSolver:
                 ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             else:
                 ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+
 
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
@@ -619,14 +622,13 @@ class GKSSolver:
 
         if self.K is not None:
             xker = self.K @ (AKpinv @ self.b)
+            Axker = self.A @ xker
+            tot_matvec_A += 1
         else:
             xker = np.zeros(self.A.shape[1])
-        Axker = self.A @ xker
-        tot_matvec_A += 1
-        c = self.b - Axker
+            c = self.b
 
         # Build initial basis
-        
         V = self.build_priorconditioning_initial_basis(Atilde, c, lambdah, init_dim)
         #(U, B, V) = golub_kahan(Atilde, c, init_dim, False, **kwargs) 
         qr_fac = np.linalg.qr(V)
@@ -636,6 +638,7 @@ class GKSSolver:
         else:
             tot_matvec_A += 4*init_dim
         dim_size = V.shape[1]
+        
 
         # If x0 is passed, augment initial basis
         if x0 is not None:
@@ -657,7 +660,7 @@ class GKSSolver:
             _eng = matlab.engine.start_matlab()
 
         for ii in progress_bar(range(n_iter)):
-
+            
             # Update weights and get new QR factorization of W L V
             Lx = self.L @ x
             tot_matvec_L += 1
@@ -677,6 +680,7 @@ class GKSSolver:
             AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
             AA = AtildeV
             (Q_Atilde, R_Atilde) = la.qr(AA, mode='economic') 
+
             if self.K is None: 
                 tot_matvec_A += V.shape[1]
             else:
@@ -691,7 +695,7 @@ class GKSSolver:
             eta = 1.01
 
             ### Check if DP problem solution exists?
-            shift = np.linalg.norm(c - (Q_Atilde @ Q_Atilde.T @ c) )**2
+            shift = np.linalg.norm(c - (Q_Atilde @ (Q_Atilde.T @ c ) ) )**2
             tmp, _, _, _ = np.linalg.lstsq(R_Atilde, Q_Atilde.T @ c, rcond=-1)
             #tmp = np.linalg.pinv(A) @ b
             lhs = (np.linalg.norm( (R_Atilde @ tmp) - (Q_Atilde.T @ c) )**2)
@@ -710,7 +714,6 @@ class GKSSolver:
 
             # Select new regularization parameter
             proposed_lambdah = self.select_regparam(Q_Atilde, R_Atilde, Q_L, R_L, c, regparam=regparam, eng=_eng, c=c, V=V, x_true=x_true, xker=xker, priorconditioning=True, Lopinv=Lopinv, **regparam_kwargs)
-            
             lambdah = max(lambdah_min, proposed_lambdah)
             lambdah = min(lambdah_max, lambdah)
             print(lambdah)
@@ -743,7 +746,8 @@ class GKSSolver:
                     ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 else:
                     ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
-       
+
+
             v = AtildeV @ y
             v = v - c # should this be b or c?
             u = LV @ y
@@ -827,7 +831,8 @@ class GKSSolver:
         if self.K is not None:
             data["Lopinv"] = Lopinv
         else:
-            data["Lopinv"] = None
+            data["Lopinv"] = Lpinv
+            
         data["Lpinv"] = Lpinv
  
         # Close engine if need to

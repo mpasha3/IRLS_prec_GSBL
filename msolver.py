@@ -623,6 +623,7 @@ class GKSSolver:
         if self.K is not None:
             xker = self.K @ (AKpinv @ self.b)
             Axker = self.A @ xker
+            c = self.b - Axker
             tot_matvec_A += 1
         else:
             xker = np.zeros(self.A.shape[1])
@@ -832,7 +833,7 @@ class GKSSolver:
             data["Lopinv"] = Lopinv
         else:
             data["Lopinv"] = Lpinv
-            
+
         data["Lpinv"] = Lpinv
  
         # Close engine if need to

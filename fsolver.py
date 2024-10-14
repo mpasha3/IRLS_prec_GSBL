@@ -431,41 +431,17 @@ class FGKSolver:
             N = W @ (self.L @ Z)
             e1 = np.zeros(H.shape[0])
             e1[0] = 1.0
-            (Q_N, R_N) = la.qr(N, mode='economic') 
 
-
-            # Use root-finder to find lambdah (full-scale problem)
-            # eta = 1.01
-            # def eval_x_lambda(_lambdah):
-            #     y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(_lambdah) * N) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((N.shape[0],)))),rcond=-1)
-            #     return (Z @ y)
-
-            # def root_finding_func(_lambdah):
-            #     xsol = eval_x_lambda(_lambdah)
-            #     return (np.linalg.norm( (H @ xsol) - np.linalg.norm(c)*e1  )**2) - ( eta*len(c) - (np.linalg.norm( c - ( U @ (U.T @ c) ) )**2) )
-            
-            # # Use root-finder to find lambdah (full-scale problem)
-            eta = 1.01
-            def eval_x_lambda(_log_lambdah):
-                y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(np.exp(_log_lambdah)) * N) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((N.shape[0],)))),rcond=-1)
-                return (Z @ y) + xker
-
-            def root_finding_func(_log_lambdah):
-                xsol = eval_x_lambda(_log_lambdah)
-                return (np.linalg.norm( (self.A @ xsol) - self.b  )**2) - (eta**2)*len(c)
-            
             try:
-                root_result = brentq(root_finding_func, -14, 7, maxiter=1000)
-                lambdah = np.exp(root_result)
+                lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), np.eye(H.shape[1]), np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
             except:
                 lambdah = 1e-14
-            #lambdah_res = root(root_finding_func, 1.0)
-            #lambdah = lambdah_res.x[0]
+
             print(lambdah)
             lambda_history.append(lambdah)
 
             # Solve for fixed lambda
-            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * R_N) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((R_N.shape[0],)))),rcond=-1)
+            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * np.eye(H.shape[1]) ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((H.shape[1],)))),rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
 

@@ -43,6 +43,8 @@ from trips.utilities.reg_param.gcv import generalized_crossvalidation
 from regparam_selection import mgcv, dp_cubic, matlab_gcv
 from regparam_selection import optimal_regparam, optimal_regparam_ssim
 
+from haarpsi import haar_psi
+
 
 def compute_V_matrix_k(A, k):
     """
@@ -291,6 +293,7 @@ class GKSSolver:
         residual_history = []
         rre_history = []
         ssim_history = []
+        haar_history = []
         cond_ests = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
@@ -337,6 +340,10 @@ class GKSSolver:
                 ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             else:
                 ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+            if self.img_shape is not None:
+                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                haar_history.append(haar_calc)
+
 
         # Build initial basis and QR factor of AV
         if Vinit is None: 
@@ -442,7 +449,9 @@ class GKSSolver:
                     ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 else:
                     ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
-
+                if self.img_shape is not None:
+                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                    haar_history.append(haar_calc)
             # if ii >= R_WL.shape[0]:
             #     break
             
@@ -540,6 +549,8 @@ class GKSSolver:
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
             data["ssim_history"] = np.asarray(ssim_history)
+            data["haar_history"] = np.asarray(haar_history)
+
 
         # Close engine if need to
         if regparam == "matlab_gcv": _eng.close()
@@ -566,6 +577,7 @@ class GKSSolver:
         residual_history = []
         rre_history = []
         ssim_history = []
+        haar_history = []
         cond_ests = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
@@ -607,7 +619,9 @@ class GKSSolver:
                 ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             else:
                 ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
-
+            if self.img_shape is not None:
+                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                haar_history.append(haar_calc)
 
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
@@ -747,7 +761,9 @@ class GKSSolver:
                     ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 else:
                     ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
-
+                if self.img_shape is not None:
+                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                    haar_history.append(haar_calc)
 
             v = AtildeV @ y
             v = v - c # should this be b or c?
@@ -828,6 +844,7 @@ class GKSSolver:
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
             data["ssim_history"] = np.asarray(ssim_history)
+            data["haar_history"] = np.asarray(haar_history)
 
         if self.K is not None:
             data["Lopinv"] = Lopinv

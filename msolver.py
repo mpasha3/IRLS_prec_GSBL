@@ -46,6 +46,25 @@ from regparam_selection import optimal_regparam, optimal_regparam_ssim
 from haarpsi import haar_psi
 
 
+def ksparsity_index(vector, k):
+    # Make a copy of the original vector
+    result = np.zeros_like(vector)
+    
+    # Find the indices of the k largest entries in absolute value
+    largest_indices = np.argpartition(np.abs(vector), -k)[-k:]
+    
+    # Set the k largest entries in the result
+    result[largest_indices] = vector[largest_indices]
+
+    # Evaluate the norm from original vector
+    return np.linalg.norm(result - vector)
+
+
+
+
+
+
+
 def compute_V_matrix_k(A, k):
     """
     Computes the matrix V from the Singular Value Decomposition (SVD) of matrix A
@@ -279,10 +298,43 @@ class GKSSolver:
         V = qr_fac.Q
 
         return V
+    
+
+    def compress_priorconditioned_basis(self, V, R_Abar, R_L, z, Q_A, kmin, lambdah):
+        """Compresses the priorconditioned basis using TSVD approach.
+        """
+
+        # Make H matrix
+        H = np.vstack([R_Abar, np.sqrt(lambdah)*R_L ])
+
+        # Truncated SVD
+        # _, _, Wh = svds(H, k=kmin-1)
+        # W = Wh.T
+        W = compute_V_matrix_k(H, kmin-1 )
+
+        # Get new basis
+        Vtilde = V @ W
+        #assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+        qr_fac = np.linalg.qr(Vtilde)
+        Vtilde = qr_fac.Q
+
+        #print(np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ))
+        assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+
+        znew = z -  Vtilde @ (Vtilde.T @ z)
+        znew /= np.linalg.norm(znew)
+        V = np.column_stack((Vtilde, znew))
+        assert np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) ) < 1e-10, "New basis is not a basis"
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
 
 
 
-    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, regparam_kwargs={}, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, ksparsity=None, regparam_kwargs={}, **kwargs):
         """Driver for GKS solver.
         """
 
@@ -298,6 +350,7 @@ class GKSSolver:
         dp_ineq_lhs = []
         dp_ineq_rhs = []
         dp_ineq_chs = []
+        ksparsity_indices = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -344,6 +397,13 @@ class GKSSolver:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                 haar_history.append(haar_calc)
 
+        # Compute k-sparsity?
+        if ksparsity is not None:
+            ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
+
+        # Compute k-sparsity?
+        if ksparsity is not None:
+            ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
         # Build initial basis and QR factor of AV
         if Vinit is None: 
@@ -452,6 +512,11 @@ class GKSSolver:
                 if self.img_shape is not None:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                     haar_history.append(haar_calc)
+            # Compute k-sparsity?
+            if ksparsity is not None:
+                ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
+
+
             # if ii >= R_WL.shape[0]:
             #     break
             
@@ -552,6 +617,9 @@ class GKSSolver:
             data["haar_history"] = np.asarray(haar_history)
 
 
+        if ksparsity is not None:
+            data["ksparsity_indices"] = np.asarray(ksparsity_indices)
+
         # Close engine if need to
         if regparam == "matlab_gcv": _eng.close()
 
@@ -559,7 +627,7 @@ class GKSSolver:
         
 
 
-    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
+    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, ksparsity=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
         """Driver for GKS solver.
         """
         valid_regparams = ["dp3", "dp"]
@@ -577,6 +645,7 @@ class GKSSolver:
         residual_history = []
         rre_history = []
         ssim_history = []
+        ksparsity_indices = []
         haar_history = []
         cond_ests = []
         dp_ineq_lhs = []
@@ -622,6 +691,10 @@ class GKSSolver:
             if self.img_shape is not None:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                 haar_history.append(haar_calc)
+
+        # Compute k-sparsity?
+        if ksparsity is not None:
+            ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
@@ -764,6 +837,9 @@ class GKSSolver:
                 if self.img_shape is not None:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                     haar_history.append(haar_calc)
+            # Compute k-sparsity?
+            if ksparsity is not None:
+                ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
             v = AtildeV @ y
             v = v - c # should this be b or c?
@@ -799,29 +875,29 @@ class GKSSolver:
                 dim_size = 1
                 
 
+            # If dim_size == kmax, need to compress the basis
+            if (dim_size == max_dim) and recycling:
 
-            
+                # Update weights and get new QR factorization of W L V
+                #LV = self.L @ V
+                #tot_matvec_L += dim_size
+                #WLV = W @ LV
 
-            # # If dim_size == kmax, need to compress the basis
-            # if (dim_size == max_dim) and recycling:
+                # Get new QR factorization for Atilde
+                AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
+                AA = AtildeV
+                (Q_Atilde, R_Atilde) = la.qr(AA, mode='economic') 
 
-            #     # Update weights and get new QR factorization of W L V
-            #     LV = self.L @ V
-            #     tot_matvec_L += dim_size
-            #     WLV = W @ LV
-            #     Q_WL, R_WL = qr(WLV, mode='economic') 
-            #     Q_L, R_L = qr(LV, mode='economic') 
+                # New basis
+                V = self.compress_priorconditioned_basis(V, R_Atilde, np.eye(R_Atilde.shape[1]), z, Q_Atilde, min_dim, lambdah)
                 
-            #     # New basis
-            #     V = self.compress_basis(V, R_A, R_WL, x, Q_A, min_dim, lambdah)
-                
-            #     # Solve the problem over the new basis
-            #     dim_size = min_dim
-            #     AV = self.A @ V 
-            #     LV = self.L @ V
-            #     tot_matvec_A += dim_size
-            #     tot_matvec_L += dim_size
-            #     Q_A, R_A = qr(AV, mode='economic')
+                # Solve the problem over the new basis
+                #dim_size = min_dim
+                #AV = self.A @ V 
+                #LV = self.L @ V
+                #tot_matvec_A += dim_size
+                #tot_matvec_L += dim_size
+                #Q_A, R_A = qr(AV, mode='economic')
 
 
         # Package output
@@ -845,6 +921,12 @@ class GKSSolver:
             data["rre_history"] = np.asarray(rre_history)
             data["ssim_history"] = np.asarray(ssim_history)
             data["haar_history"] = np.asarray(haar_history)
+
+
+
+
+        if ksparsity is not None:
+            data["ksparsity_indices"] = np.asarray(ksparsity_indices)
 
         if self.K is not None:
             data["Lopinv"] = Lopinv

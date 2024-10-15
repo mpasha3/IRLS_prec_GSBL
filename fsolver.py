@@ -75,11 +75,7 @@ def ksparsity_index(vector, k):
 
 
 class FGKSolver:
-    """Implements a generic GKS solver for problems of the form:
-
-    If noise_var is provided, then the problem solved is 
-        argmin_x  (1/noise_var)*|| A x - b ||_2^2 + \lambda || L x ||_q^q.
-
+    """Implements a flexible Golub-Kahan solver.
     """
 
     def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
@@ -284,7 +280,7 @@ class FGKSolver:
         return V
     
 
-    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, ksparsity=None, weight_params=None, refresh_basis=False):
+    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False):
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
@@ -364,7 +360,7 @@ class FGKSolver:
         U = u[:,None]
 
 
-        for i in range(n_iter):
+        for i in progress_bar(range(n_iter)):
 
             print(f"Starting iteration {i}")
             
@@ -381,7 +377,6 @@ class FGKSolver:
                 Atilde = self.A @ Lpinv
                 Lopinv = Lpinv
 
-        
             ### Iteration
 
             vbar = self.A.T @ u
@@ -431,17 +426,21 @@ class FGKSolver:
             N = W @ (self.L @ Z)
             e1 = np.zeros(H.shape[0])
             e1[0] = 1.0
+            (Q_N, R_N) = la.qr(N, mode='economic')
 
             try:
-                lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), np.eye(H.shape[1]), np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
             except:
-                lambdah = 1e-14
+                proposed_lambdah = 1e-14
+
+            lambdah = max(lambdah_min, proposed_lambdah)
+            lambdah = min(lambdah_max, lambdah)
 
             print(lambdah)
             lambda_history.append(lambdah)
 
             # Solve for fixed lambda
-            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * np.eye(H.shape[1]) ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((H.shape[1],)))),rcond=-1)
+            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )),rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
 

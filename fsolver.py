@@ -315,7 +315,6 @@ class FGKSolver:
         else:
             x = x0
             
-
         # Metrics
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
@@ -349,7 +348,6 @@ class FGKSolver:
         else:
             xker = np.zeros(self.A.shape[1])
             c = self.b
-
 
         # Initial calculations
         #xinc = self.L @ (Lopinv @ ( self.L @ x ))

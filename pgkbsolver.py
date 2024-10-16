@@ -35,7 +35,6 @@ from skimage.metrics import structural_similarity
 
 
 
-
 # Try to import matlab.engine
 try:
     import matlab.engine
@@ -280,7 +279,7 @@ class GKBSolver:
         return V
     
 
-    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, ksparsity=None, weight_params=None, refresh_basis=False):
+    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False):
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
@@ -352,8 +351,7 @@ class GKBSolver:
 
 
 
-
-        for ii in range(1, n_iter):
+        for ii in progress_bar(range(n_iter)):
 
 
             # Get initial weights and pseudoinverses
@@ -369,144 +367,37 @@ class GKBSolver:
 
 
             # Compute the GKB
-            U, B, V = golub_kahan(Atilde, c, ii, dp_stop=False)
+            U, B, V = golub_kahan(Atilde, c, ii+1, dp_stop=False)
 
-            # Other calculations
-            H = U.T @ AZ
-            W = sps.diags(w)
-            N = W @ (self.L @ Z)
-            e1 = np.zeros(H.shape[0])
+            # Choose regularization parameter
+            e1 = np.zeros(B.shape[0])
             e1[0] = 1.0
 
             try:
-                lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(B), np.eye(H.shape[1]), np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(B), np.eye(V.shape[1]), np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
             except:
-                lambdah = 1e-14
+                proposed_lambdah = 1e-14
+            
+            lambdah = max(lambdah_min, proposed_lambdah)
+            lambdah = min(lambdah_max, lambdah)
 
             print(lambdah)
             lambda_history.append(lambdah)
 
 
 
-            # Choose regularization parameter
-
-
             # Solve for chosen lambda
-            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * np.eye(H.shape[1]) ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((H.shape[1],)))),rcond=-1)
+            y, _ , _, svals = np.linalg.lstsq(np.vstack( (B, np.sqrt(lambdah) * np.eye(V.shape[1]) ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((V.shape[1],)))),rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
 
 
             # Recover full solution
-            x = Lopinv @ (Z @ y) # Project back onto x space
+            x = Lopinv @ (V @ y) # Project back onto x space
             if self.K is not None:
                 xfull = x + xker
             else:
                 xfull = x
-
-
-        # Initial calculations
-        #xinc = self.L @ (Lopinv @ ( self.L @ x ))
-        #r = c - Atilde @ xinc
-        r = c
-        #r = self.b - self.A @ x
-        u  = r / np.linalg.norm(r)
-        U = u[:,None]
-
-
-        for i in range(n_iter):
-
-            print(f"Starting iteration {i}")
-            
-            ### Get new weights
-
-            # Get initial weights and pseudoinverses
-            w = self.update_weights(self.L @ x, lambdah, weight_params)
-            Lpinv = self.Lpinv_factory(w)
-            if self.K is not None:
-                AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
-                Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
-                Atilde = self.A @ Lopinv
-            else:
-                Atilde = self.A @ Lpinv
-                Lopinv = Lpinv
-
-        
-            ### Iteration
-
-            vbar = self.A.T @ u
-            if i == 0:
-                v = vbar
-            else:
-                v = vbar - (V @ (V.T @ vbar))
-            v = v/np.linalg.norm(v)
-            
-            if i == 0:
-                V = v[:,None]
-            else:
-                V = np.column_stack((V,v))
-
-            z = Lopinv @ (Lopinv.T @ v)
-            if not refresh_basis:
-                if i == 0:
-                    Z = z[:,None]
-                    AZ = (self.A @ z)[:,None]
-                else:
-                    Z = np.column_stack((Z,z))
-                    #AZ = self.A @ Z
-                    AZ = np.column_stack((AZ, self.A @ z))
-            else:
-                
-                Z = np.column_stack([ Lopinv @ (Lopinv.T @ V[:, jj]) for jj in range(V.shape[1])  ])
-                AZ = self.A @ Z
-                # z = Lopinv @ (Lopinv.T @ v)
-                # if i == 0:
-                #     Z = z[:,None]
-                #     AZ = (self.A @ z)[:,None]
-                # else:
-                #     Z = np.column_stack((Z,z))
-                #     #AZ = self.A @ Z
-                #     AZ = np.column_stack((AZ, self.A @ z))
-
-            ubar = self.A @ z
-            u = ubar - (U @ (U.T @ ubar))
-            u = u/np.linalg.norm(u)
-            U = np.column_stack((U, u))
-            
-            #assert np.isscalar(regparam)
-
-            # Other calculations
-            H = U.T @ AZ
-            W = sps.diags(w)
-            N = W @ (self.L @ Z)
-            e1 = np.zeros(H.shape[0])
-            e1[0] = 1.0
-
-            try:
-                lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), np.eye(H.shape[1]), np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
-            except:
-                lambdah = 1e-14
-
-            print(lambdah)
-            lambda_history.append(lambdah)
-
-            # Solve for fixed lambda
-            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * np.eye(H.shape[1]) ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros((H.shape[1],)))),rcond=-1)
-            cond_est = np.amax(svals)/np.amin(svals)
-            cond_ests.append(cond_est)
-
-
-            # Recover full solution
-            x = Z @ y # Project back onto z space
-            if self.K is not None:
-                #print(Lopinv.shape)
-                #print(x.shape)
-                #print(xker.shape)
-                xfull = x + xker
-                #xfull = (Lopinv @ x) + xker # Project back onto x space
-            else:
-                xfull = x + xker
-                #xfull = Lpinv @ x
 
 
             # Metrics
@@ -528,8 +419,7 @@ class GKBSolver:
             "x": xfull,
             "V": V,
             "U": U,
-            "H": H,
-            "Z": Z,
+            "B": B,
             "w": w,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
@@ -627,7 +517,7 @@ def theta_update(Lx, r, beta, vartheta):
 
 
 
-class MMFGK(FGKSolver):
+class MMGKB(GKBSolver):
 
     def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
@@ -642,7 +532,7 @@ class MMFGK(FGKSolver):
 
 
 
-class IASFGK(FGKSolver):
+class IASGKB(GKBSolver):
 
     def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 
@@ -658,7 +548,7 @@ class IASFGK(FGKSolver):
     
 
 
-class VanillaFGK(FGKSolver):
+class VanillaGKB(GKBSolver):
 
     def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
 

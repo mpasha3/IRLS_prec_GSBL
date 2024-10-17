@@ -53,6 +53,8 @@ from regparam_selection import mgcv, dp_cubic, matlab_gcv
 from regparam_selection import optimal_regparam, optimal_regparam_ssim
 
 
+from haarpsi import haar_psi
+
 
 
 
@@ -293,6 +295,7 @@ class GKBSolver:
         residual_history = []
         rre_history = []
         ssim_history = []
+        haar_history = []
         cond_ests = []
         ksparsity_indices = []
         dp_ineq_lhs = []
@@ -319,10 +322,15 @@ class GKBSolver:
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+
             if self.img_shape is None:
                 ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             else:
                 ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+
+            if self.img_shape is not None:
+                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                haar_history.append(haar_calc)
 
         # Compute k-sparsity?
         if ksparsity is not None:
@@ -404,10 +412,15 @@ class GKBSolver:
             if x_true is not None:
                 x_true_norm = np.linalg.norm(x_true)
                 rre_history.append( np.linalg.norm(xfull - x_true)/x_true_norm )
+
                 if self.img_shape is None:
                     ssim_history.append( structural_similarity( xfull, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 else:
                     ssim_history.append( structural_similarity( xfull.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                
+                if self.img_shape is not None:
+                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                    haar_history.append(haar_calc)
 
             # Compute k-sparsity?
             if ksparsity is not None:
@@ -421,6 +434,7 @@ class GKBSolver:
             "U": U,
             "B": B,
             "w": w,
+            "Lopinv": Lopinv,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
         }
@@ -428,6 +442,7 @@ class GKBSolver:
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
             data["ssim_history"] = np.asarray(ssim_history)
+            data["haar_history"] = np.asarray(haar_history)
 
         if ksparsity is not None:
             data["ksparsity_indices"] = np.asarray(ksparsity_indices)

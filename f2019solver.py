@@ -154,10 +154,15 @@ def update_fgk(A, Z, U, M, V, T, L, breakdown_tol=1e-14):
         V = v[:,None]
         Z = z[:,None]
     else:
-        V = np.column_stack((V,v))
+        vnew = v - (V @ (V.T @ v))
+        V = np.column_stack((V,vnew))
+        #V = np.column_stack((V,v))
+
         Z = np.column_stack((Z,z))
 
-    U = np.column_stack((U,u))
+    unew = u - (U @ (U.T @ u))
+    U = np.column_stack((U,unew))
+    #U = np.column_stack((U,u))
 
     return U, M, T, V, Z, broke_down
 
@@ -171,30 +176,31 @@ class FGK2019Solver:
     """Implements a flexible Golub-Kahan solver.
     """
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+    def __init__(self, A, L, Linv, b, noise_var=None, K=None, img_shape=None):
 
         # Bind
         self._A = A
-        self.L = L
+        self._L = L
+        self._Linv = Linv
+        self.A = A @ Linv
+        self.L = jlinops.IdentityOperator((Linv.shape[1], Linv.shape[1]))
         self._b = b
         self.noise_var = noise_var
-        self.Lpinv_factory = Lpinv_factory
         self.K = K
-        self.n = A.shape[1]
-        self.m = A.shape[0]
-        self.k = L.shape[0]
+        self.n = self.A.shape[1]
+        self.m = self.A.shape[0]
+        self.k = self.L.shape[0]
         self.img_shape = img_shape
 
-        assert Lpinv_factory is not None, "MUST pass Lpinv_factory for flexible methods."
+        assert K is None, "K must be none."
 
         # Whiten?
         if self.noise_var is not None:
             self.noise_stdev = np.sqrt(self.noise_var)
-            self.A = (1.0/self.noise_stdev)*self._A
+            self.A = (1.0/self.noise_stdev)*self.A
             self.b = (1.0/self.noise_stdev)*self._b
         else:
             self.noise_stdev = None
-            self.A = self._A
             self.b = self._b
 
 
@@ -373,12 +379,11 @@ class FGK2019Solver:
         return V
     
 
-    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False, breakdown_tol=1e-14):
+    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, mode="W", lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False, breakdown_tol=1e-14):
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
-        assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
-        assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
+        assert mode in ["I", "R", "W"], "Mode must be either I, R or W."
 
         # Tracking
         tot_matvec_A = 0
@@ -409,20 +414,21 @@ class FGK2019Solver:
             x = self.A.T @ self.b
             tot_matvec_A += 1
         else:
-            x = x0
+            x = self._L @ x0
             
         # Metrics
         if x_true is not None:
+            xbar = self._Linv @ x
             x_true_norm = np.linalg.norm(x_true)
-            rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+            rre_history.append( np.linalg.norm(xbar - x_true)/x_true_norm )
 
             if self.img_shape is None:
-                ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                ssim_history.append( structural_similarity( xbar, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             else:
-                ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                ssim_history.append( structural_similarity( xbar.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
             
             if self.img_shape is not None:
-                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), xbar.reshape(self.img_shape))
                 haar_history.append(haar_calc)
 
 
@@ -433,7 +439,7 @@ class FGK2019Solver:
 
         # Get initial weights and pseudoinverses
         w = self.update_weights(self.L @ x, lambdah, weight_params)
-        Lpinv = self.Lpinv_factory(w)
+        Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
             Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
@@ -442,14 +448,10 @@ class FGK2019Solver:
             Atilde = self.A @ Lpinv
             Lopinv = Lpinv
 
-        if self.K is not None:
-            xker = self.K @ (AKpinv @ self.b)
-            Axker = self.A @ xker
-            c = self.b - Axker
-            tot_matvec_A += 1
-        else:
-            xker = np.zeros(self.A.shape[1])
-            c = self.b
+ 
+        xker = np.zeros(self.A.shape[1])
+        c = self.b
+
 
         # Initial calculations
         #xinc = self.L @ (Lopinv @ ( self.L @ x ))
@@ -468,21 +470,16 @@ class FGK2019Solver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
-            Lpinv = self.Lpinv_factory(w)
-            if self.K is not None:
-                AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
-                Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
-                Atilde = self.A @ Lopinv
-            else:
-                Atilde = self.A @ Lpinv
-                Lopinv = Lpinv
+            Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
+            Atilde = self.A @ Lpinv
+            Lopinv = Lpinv
 
 
             ### Update the FGK factorization
             if i == 0:
-                U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv.T, breakdown_tol=breakdown_tol )
+                U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv, breakdown_tol=breakdown_tol )
             else:
-                U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv.T, breakdown_tol=breakdown_tol )
+                U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv, breakdown_tol=breakdown_tol )
 
             if broke:
                 broke_down_idx = i
@@ -500,10 +497,23 @@ class FGK2019Solver:
 
             # Other calculations
             W = sps.diags(w)
-            N = W @ (self.L @ Z)
             e1 = np.zeros(M.shape[0])
             e1[0] = 1.0
-            (Q_N, R_N) = la.qr(N, mode='economic')
+
+            if mode == "R":
+                # FLSQR-R (Z)
+                N = Z
+                (Q_N, R_N) = la.qr(N, mode='economic')
+            elif mode == "I":
+                # FLSQR-I (I)
+                R_N = np.eye(M.shape[1])
+            elif mode == "W":
+                # FLSQR-W (W Z)
+                N = W @ Z
+                (Q_N, R_N) = la.qr(N, mode='economic')
+            else:
+                raise NotImplementedError
+            
 
             try:
                 proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
@@ -524,28 +534,21 @@ class FGK2019Solver:
 
             # Recover full solution
             x = Z @ y # Project back onto z space
-            if self.K is not None:
-                #print(Lopinv.shape)
-                #print(x.shape)
-                #print(xker.shape)
-                xfull = x + xker
-                #xfull = (Lopinv @ x) + xker # Project back onto x space
-            else:
-                xfull = x + xker
-                #xfull = Lpinv @ x
+            xfull = x
+            xbar = self._Linv @ xfull
 
 
             # Metrics
             if x_true is not None:
                 x_true_norm = np.linalg.norm(x_true)
-                rre_history.append( np.linalg.norm(xfull - x_true)/x_true_norm )
+                rre_history.append( np.linalg.norm(xbar - x_true)/x_true_norm )
                 if self.img_shape is None:
-                    ssim_history.append( structural_similarity( xfull, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                    ssim_history.append( structural_similarity( xbar, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 else:
-                    ssim_history.append( structural_similarity( xfull.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                    ssim_history.append( structural_similarity( xbar.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
                 
                 if self.img_shape is not None:
-                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), xbar.reshape(self.img_shape))
                     haar_history.append(haar_calc)
 
 
@@ -556,7 +559,8 @@ class FGK2019Solver:
 
         # Package data
         data = {
-            "x": xfull,
+            "x": xbar,
+            "_x": x,
             "V": V,
             "U": U,
             "M": M,
@@ -676,11 +680,11 @@ class MM2019FGK2019(FGK2019Solver):
     q corresponds to the lq norm. 
     tau1 and tau2 correspond to the thresholds.
     """
+ 
 
+    def __init__(self,  A, L, Linv, b, noise_var=None, K=None, img_shape=None):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
-
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+        super().__init__(A, L, Linv, b, noise_var=noise_var, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):
@@ -693,9 +697,9 @@ class MM2019FGK2019(FGK2019Solver):
 
 class MMFGK2019(FGK2019Solver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+    def __init__(self,  A, L, Linv, b, noise_var=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+        super().__init__(A, L, Linv, b, noise_var=noise_var, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):
@@ -708,9 +712,9 @@ class MMFGK2019(FGK2019Solver):
 
 class IASFGK2019(FGK2019Solver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+    def __init__(self,  A, L, Linv, b, noise_var=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+        super().__init__(A, L, Linv, b, noise_var=noise_var, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):
@@ -724,9 +728,9 @@ class IASFGK2019(FGK2019Solver):
 
 class VanillaFGK2019(FGK2019Solver):
 
-    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+    def __init__(self,  A, L, Linv, b, noise_var=None, K=None, img_shape=None):
 
-        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+        super().__init__(A, L, Linv, b, noise_var=noise_var, K=K, img_shape=img_shape)
 
 
     def update_weights(self, Lx, lambdah, weight_params):

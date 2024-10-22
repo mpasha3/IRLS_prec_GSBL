@@ -150,10 +150,16 @@ def update_fgk(A, Z, U, M, V, T, L, breakdown_tol=1e-14):
         V = v[:,None]
         Z = z[:,None]
     else:
-        V = np.column_stack((V,v))
+        vnew = v - (V @ (V.T @ v))
+        V = np.column_stack((V,vnew))
+        #V = np.column_stack((V,v))
+
         Z = np.column_stack((Z,z))
 
-    U = np.column_stack((U,u))
+    unew = u - (U @ (U.T @ u))
+    U = np.column_stack((U,unew))
+    #U = np.column_stack((U,u))
+
 
     return U, M, T, V, Z, broke_down
 

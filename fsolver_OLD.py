@@ -1,0 +1,705 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Add files up one level to the path
+import sys
+sys.path.append("..")
+
+import jlinops
+
+from matplotlib.backends.backend_pdf import PdfPages
+
+from scipy.linalg import qr, qr_insert
+from scipy.integrate import odeint
+import scipy.optimize as op
+import scipy.sparse as sps
+from scipy import linalg as la
+from scipy.optimize import root
+
+
+from fastprogress import progress_bar
+
+import warnings
+
+import scipy.optimize as op
+from scipy.sparse.linalg import svds
+from scipy.linalg import null_space
+
+import scipy.sparse as sps
+from scipy.fft import dct, idct
+
+from scipy.optimize import brentq
+
+
+from skimage.metrics import structural_similarity
+
+
+from haarpsi import haar_psi
+
+
+
+
+# Try to import matlab.engine
+try:
+    import matlab.engine
+except:
+    pass # assume we don't need it
+    # raise Exception("Error with matlab.engine, make sure it is installed correctly.")
+
+
+from trips.utilities.weights import smoothed_holder_weights
+from trips.utilities.decompositions import golub_kahan
+
+from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
+from trips.utilities.reg_param.gcv import generalized_crossvalidation
+
+from regparam_selection import mgcv, dp_cubic, matlab_gcv
+from regparam_selection import optimal_regparam, optimal_regparam_ssim
+
+
+
+
+
+def ksparsity_index(vector, k):
+    # Make a copy of the original vector
+    result = np.zeros_like(vector)
+    
+    # Find the indices of the k largest entries in absolute value
+    largest_indices = np.argpartition(np.abs(vector), -k)[-k:]
+    
+    # Set the k largest entries in the result
+    result[largest_indices] = vector[largest_indices]
+
+    # Evaluate the norm from original vector
+    return np.linalg.norm(result - vector)
+
+
+
+
+def to_upper_hessenberg(matrix):
+    """
+    Takes a matrix and returns its upper Hessenberg form.
+    Elements below the first subdiagonal are set to zero.
+    
+    Parameters:
+    matrix (np.ndarray): Input matrix (assumed to be 2D).
+    
+    Returns:
+    np.ndarray: Upper Hessenberg matrix.
+    """
+    # Get the number of rows and columns
+    rows, cols = matrix.shape
+    
+    # Make a copy of the matrix to zero out below the first subdiagonal
+    hessenberg_matrix = np.copy(matrix)
+    
+    # Use NumPy's advanced indexing to zero out elements below the first subdiagonal
+    i, j = np.tril_indices(rows, -2)
+    hessenberg_matrix[i, j] = 0
+    
+    return hessenberg_matrix
+
+
+
+class FGKSolver:
+    """Implements a flexible Golub-Kahan solver.
+    """
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        # Bind
+        self._A = A
+        self.L = L
+        self._b = b
+        self.noise_var = noise_var
+        self.Lpinv_factory = Lpinv_factory
+        self.K = K
+        self.n = A.shape[1]
+        self.m = A.shape[0]
+        self.k = L.shape[0]
+        self.img_shape = img_shape
+
+        assert Lpinv_factory is not None, "MUST pass Lpinv_factory for flexible methods."
+
+        # Whiten?
+        if self.noise_var is not None:
+            self.noise_stdev = np.sqrt(self.noise_var)
+            self.A = (1.0/self.noise_stdev)*self._A
+            self.b = (1.0/self.noise_stdev)*self._b
+        else:
+            self.noise_stdev = None
+            self.A = self._A
+            self.b = self._b
+
+
+    def update_weights(self, x, weight_params):
+
+        raise NotImplementedError
+
+
+    def build_initial_basis(self, dim):
+        """
+        Builds the initial basis.
+        """
+
+        Atb = self.A.T @ self.b
+
+        V = np.zeros((self.n, dim))
+        V[:,0] = Atb
+        tmp = Atb.copy()
+        for j in range(1,dim):
+            tmp = self.A.T @ (self.A @ tmp)
+            V[:,j] = tmp.copy()
+
+        # V = np.random.normal(size=(self.n, 5))
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
+    
+
+    def build_restarted_basis(self, dim, x, w, lambdah):
+        """
+        Builds the restarted basis.
+        """
+        Atb = self.A.T @ self.b
+
+        V = np.zeros((self.n, dim))
+        V[:,0] = Atb
+        tmp = Atb.copy()
+        for j in range(1,dim):
+            tmp = (self.A.T @ (self.A @ tmp)) + lambdah*(self.L.T @ (w * (w * (self.L @ tmp ) ) ) )
+            V[:,j] = tmp.copy()
+
+        V = np.column_stack([V, x])
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
+    
+
+    def build_priorconditioning_initial_basis(self, Atilde, c, lambdah, dim):
+        """
+        Builds the initial basis for the priorconditioned algorithm.
+        """
+
+        Atildetc = Atilde.T @ c
+
+        V = np.zeros((Atilde.shape[1], dim))
+        V[:,0] = Atildetc
+        tmp = Atildetc
+        for j in range(1,dim):
+            # print(j)
+            # print(tmp)
+            tmp = Atilde.T @ (Atilde @ tmp)
+            #tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
+            tmp = tmp/np.linalg.norm(tmp)
+            V[:,j] = tmp.copy()
+
+        # V = np.random.normal(size=(self.n, 5))
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
+    
+
+    def select_regparam(self, Q_A, R_A, Q_L, R_L, b, regparam, c=None, eng=None, xker=None, x_true=None, V=None, priorconditioning=False, Lopinv=None, **regparam_kwargs):
+        """Selects regularization parameter for the projected problem.
+        """
+
+        if c is None:
+            c = b
+
+        # Select new regularization parameter
+        if regparam == "mgcv": # Jonathan's MGCV method
+            proposed_lambdah = mgcv(Q_A, R_A, R_L, c, **regparam_kwargs)
+        elif regparam == "dp": # Trips-Py dp
+            proposed_lambdah = discrepancy_principle(Q_A, R_A, R_L, c, delta=np.sqrt(self.m), explicitProj=True, **regparam_kwargs)
+        elif regparam == 'gcv': # Trips-Py gcv
+            proposed_lambdah = generalized_crossvalidation(Q_A, R_A, R_L, c, **regparam_kwargs)
+        elif regparam == "dp2": # Jonathan's 2nd-order DP code. Requires 2 LS solves per iteration.
+            shift = np.linalg.norm( b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+            # Hacky try-except block since code is not completely debugged for small \beta!
+            try:
+                data = dp_quadratic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
+            except:
+                # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                data = dp_quadratic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
+                #pass
+            proposed_lambdah = data["lambda"]
+            self.beta0 = 1.0/proposed_lambdah
+        elif regparam == "dp3": # Jonathan's 3rd-order DP code. Requires 3 LS solves per iteration.
+            shift = np.linalg.norm( b -  ( Q_A @ (Q_A.T @ b) ), ord=2 )**2 # needed for calculation w.r.t. full-scale objective
+            # Hacky try-except block since code is not completely debugged for small \beta!
+            try:
+                data = dp_cubic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=self.beta0, **regparam_kwargs)
+            except:
+                # If it didn't work with initializing beta0, try again without initializing it (defaults to beta0 very small). 
+                data = dp_cubic(R_A, R_L, Q_A.T @ c, noise_var=1.0, shift=shift, m=len(b), beta0=None, **regparam_kwargs)
+                #pass
+            proposed_lambdah = data["lambda"]
+            self.beta0 = 1.0/proposed_lambdah
+        elif regparam == "matlab_gcv": # MATLAB GCV code
+            proposed_lambdah = matlab_gcv( R_A, R_L, Q_A.T @ c, eng=eng, **regparam_kwargs)
+        elif regparam == "optimal":
+            assert x_true is not None, "Must provide x_true to use optimal regparam method."
+            assert V is not None, "Must pass V to use optimal regparam method."
+            if not priorconditioning:
+                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, self.b, V, x_true, **regparam_kwargs)
+            else:
+                assert xker is not None, "Must pass xker."
+                proposed_lambdah = optimal_regparam(R_A, R_L, Q_A, Q_L, c, V, x_true, Lopinv=Lopinv, xker=xker, **regparam_kwargs)
+        elif regparam == "optimal_ssim":
+            assert x_true is not None, "Must provide x_true to use optimal regparam method."
+            assert V is not None, "Must pass V to use optimal regparam method."
+            if not priorconditioning:
+                proposed_lambdah = optimal_regparam_ssim(R_A, R_L, Q_A, Q_L, self.b, V, x_true, **regparam_kwargs)
+            else:
+                assert xker is not None, "Must pass xker."
+                proposed_lambdah = optimal_regparam_ssim(R_A, R_L, Q_A, Q_L, c, V, x_true, Lopinv=Lopinv, xker=xker, **regparam_kwargs)
+        elif not isinstance(regparam, str): # hope that regparam is a scalar
+            proposed_lambdah = regparam
+        else:
+            raise NotImplementedError
+
+        return proposed_lambdah
+    
+
+    def compress_basis(self, V, R_A, R_L, x, Q_A, kmin, lambdah):
+        """Compresses the basis using TSVD approach.
+        """
+
+        # Make H matrix
+        print(R_A.shape)
+        print(R_L.shape)
+        H = np.vstack([R_A, np.sqrt(lambdah)*R_L ])
+        print(H.shape)
+
+        # Truncated SVD
+        # _, _, Wh = svds(H, k=kmin-1)
+        # W = Wh.T
+        W = compute_V_matrix_k(H, kmin-1 )
+
+        # Get new basis
+        Vtilde = V @ W
+        #assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+        qr_fac = np.linalg.qr(Vtilde)
+        Vtilde = qr_fac.Q
+
+        #print(np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ))
+        assert np.linalg.norm( (Vtilde.T @ Vtilde) - np.eye(Vtilde.shape[1]) ) < 1e-10, "New basis is not a basis"
+
+        xnew = x -  Vtilde @ (Vtilde.T @ x)
+        xnew /= np.linalg.norm(xnew)
+        V = np.column_stack((Vtilde, xnew))
+        assert np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) ) < 1e-10, "New basis is not a basis"
+
+        # Orthogonalize
+        qr_fac = np.linalg.qr(V)
+        V = qr_fac.Q
+
+        return V
+    
+
+    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False):
+
+        valid_regparams = ["dp3", "dp"]
+        assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
+        assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
+        assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
+
+        # Tracking
+        tot_matvec_A = 0
+        tot_matvec_L = 0 
+        lambda_history = []
+        residual_history = []
+        rre_history = []
+        ssim_history = []
+        haar_history = []
+        cond_ests = []
+        ksparsity_indices = []
+        dp_ineq_lhs = []
+        dp_ineq_rhs = []
+        dp_ineq_chs = []
+
+        # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
+        if lambdah0 is None:
+            #lambdah = 1.0
+            #lambdah = regparam
+            lambdah = 1.0
+        else:
+            lambdah = lambdah0
+
+        # Initialization
+        if x0 is None:
+            x = self.A.T @ self.b
+            tot_matvec_A += 1
+        else:
+            x = x0
+            
+        # Metrics
+        if x_true is not None:
+            x_true_norm = np.linalg.norm(x_true)
+            rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
+
+            if self.img_shape is None:
+                ssim_history.append( structural_similarity( x, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+            else:
+                ssim_history.append( structural_similarity( x.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+            
+            if self.img_shape is not None:
+                haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                haar_history.append(haar_calc)
+
+
+        # Compute k-sparsity?
+        if ksparsity is not None:
+            ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
+
+
+        # Get initial weights and pseudoinverses
+        w = self.update_weights(self.L @ x, lambdah, weight_params)
+        Lpinv = self.Lpinv_factory(w)
+        if self.K is not None:
+            AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+            Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
+            Atilde = self.A @ Lopinv
+        else:
+            Atilde = self.A @ Lpinv
+            Lopinv = Lpinv
+
+        if self.K is not None:
+            xker = self.K @ (AKpinv @ self.b)
+            Axker = self.A @ xker
+            c = self.b - Axker
+            tot_matvec_A += 1
+        else:
+            xker = np.zeros(self.A.shape[1])
+            c = self.b
+
+        # Initial calculations
+        #xinc = self.L @ (Lopinv @ ( self.L @ x ))
+        #r = c - Atilde @ xinc
+        r = c
+        #r = self.b - self.A @ x
+        u  = r / np.linalg.norm(r)
+        U = u[:,None]
+
+
+        for i in progress_bar(range(n_iter)):
+
+            print(f"Starting iteration {i}")
+            
+            ### Get new weights
+
+            # Get initial weights and pseudoinverses
+            w = self.update_weights(self.L @ x, lambdah, weight_params)
+            Lpinv = self.Lpinv_factory(w)
+            if self.K is not None:
+                AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+                Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
+                Atilde = self.A @ Lopinv
+            else:
+                Atilde = self.A @ Lpinv
+                Lopinv = Lpinv
+
+            ### Iteration
+
+            vbar = self.A.T @ u
+            if i == 0:
+                v = vbar
+            else:
+                v = vbar - (V @ (V.T @ vbar))
+            v = v/np.linalg.norm(v)
+            
+            if i == 0:
+                V = v[:,None]
+            else:
+                V = np.column_stack((V,v))
+
+            # Check V is semi-orthogonal? 
+            if np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) ) > 1e-10:
+                warnings.warn("V appears to no longer be semi-orthogonal.", UserWarning)
+
+            z = Lopinv @ (Lopinv.T @ v)
+            if not refresh_basis:
+                if i == 0:
+                    Z = z[:,None]
+                    AZ = (self.A @ z)[:,None]
+                else:
+                    Z = np.column_stack((Z,z))
+                    #AZ = self.A @ Z
+                    AZ = np.column_stack((AZ, self.A @ z))
+            else:
+                
+                Z = np.column_stack([ Lopinv @ (Lopinv.T @ V[:, jj]) for jj in range(V.shape[1])  ])
+                AZ = self.A @ Z
+                # z = Lopinv @ (Lopinv.T @ v)
+                # if i == 0:
+                #     Z = z[:,None]
+                #     AZ = (self.A @ z)[:,None]
+                # else:
+                #     Z = np.column_stack((Z,z))
+                #     #AZ = self.A @ Z
+                #     AZ = np.column_stack((AZ, self.A @ z))
+
+            ubar = self.A @ z
+            u = ubar - (U @ (U.T @ ubar))
+            u = u/np.linalg.norm(u)
+            U = np.column_stack((U, u))
+
+            # Check U is semi-orthogonal? 
+            if np.linalg.norm( (U.T @ U) - np.eye(U.shape[1]) ) > 1e-10:
+                warnings.warn("U appears to no longer be semi-orthogonal.", UserWarning)
+            
+            #assert np.isscalar(regparam)
+
+            # Other calculations
+            H = U.T @ AZ
+            H = to_upper_hessenberg(H) # zero out the entries that should be zero.
+            W = sps.diags(w)
+            N = W @ (self.L @ Z)
+            e1 = np.zeros(H.shape[0])
+            e1[0] = 1.0
+            (Q_N, R_N) = la.qr(N, mode='economic')
+
+            try:
+                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+            except:
+                proposed_lambdah = 1e-14
+
+            lambdah = max(lambdah_min, proposed_lambdah)
+            lambdah = min(lambdah_max, lambdah)
+
+            print(lambdah)
+            lambda_history.append(lambdah)
+
+            # Solve for fixed lambda
+            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )),rcond=-1)
+            cond_est = np.amax(svals)/np.amin(svals)
+            cond_ests.append(cond_est)
+
+
+            # Recover full solution
+            x = Z @ y # Project back onto z space
+            if self.K is not None:
+                #print(Lopinv.shape)
+                #print(x.shape)
+                #print(xker.shape)
+                xfull = x + xker
+                #xfull = (Lopinv @ x) + xker # Project back onto x space
+            else:
+                xfull = x + xker
+                #xfull = Lpinv @ x
+
+
+            # Metrics
+            if x_true is not None:
+                x_true_norm = np.linalg.norm(x_true)
+                rre_history.append( np.linalg.norm(xfull - x_true)/x_true_norm )
+                if self.img_shape is None:
+                    ssim_history.append( structural_similarity( xfull, x_true, data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                else:
+                    ssim_history.append( structural_similarity( xfull.reshape(self.img_shape), x_true.reshape(self.img_shape), data_range=(np.amax(x_true) - np.amin(x_true) ), gaussian_weights=True, sigma=1.5, use_sample_covariance=False ) )
+                
+                if self.img_shape is not None:
+                    haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
+                    haar_history.append(haar_calc)
+
+
+            # Compute k-sparsity?
+            if ksparsity is not None:
+                ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
+
+
+        # Package data
+        data = {
+            "x": xfull,
+            "V": V,
+            "U": U,
+            "H": H,
+            "Z": Z,
+            "w": w,
+            "lambda_history": np.asarray(lambda_history),
+            "cond_ests": np.asarray(cond_ests),
+        }
+
+        if x_true is not None:
+            data["rre_history"] = np.asarray(rre_history)
+            data["ssim_history"] = np.asarray(ssim_history)
+            data["haar_history"] = np.asarray(haar_history)
+
+        if ksparsity is not None:
+            data["ksparsity_indices"] = np.asarray(ksparsity_indices)
+        
+
+        return data
+
+
+
+
+
+
+## Specific update formulas
+
+def conditional_mode_ode_rhs(varphi, z, r):
+        """RHS of the ODE used for updating theta.
+        """
+        
+        dvarphidz = (2*z*varphi)/((2*(r**2)*((varphi)**(r+1))) + (z**2))
+
+        return dvarphidz
+
+
+
+def theta_update(Lx, r, beta, vartheta):
+    """Returns the theta-update IAS.
+    """
+
+    eta = r*beta - 1.5
+    initial_value = (eta/r)**(1/r)
+
+    # Rescale
+    z = np.abs(  ( Lx )  / np.sqrt(vartheta) )
+
+    # If r = 1, use exact formula
+    if abs(r - 1) < 1e-5:    
+            # print("Using exact formula for r = 1")
+            xi = 0.5*( eta + np.sqrt( (eta**2) +  2*(z**2)  ) )
+            new_theta = vartheta*xi
+            
+            return new_theta
+
+    elif abs(r + 1) < 1e-5:
+            
+            # print("Using exact formula for r = -1")
+            
+            k = beta + 1.5
+            xi = (1/(2*k)) * ( (z**2) + 2 )
+            new_theta = vartheta*xi
+            
+            return new_theta
+
+    # Otherwise, solve using the ODE method
+    else:
+        
+        #print("Using ODE method")
+        
+        final_times = z
+
+        # Sort the final times
+        argsort = final_times.argsort()
+        final_times_sorted = final_times[argsort]
+
+        # We need to prepend zero to this for the solver
+        final_times_sorted = np.insert(final_times_sorted, 0, 0)
+
+        # Now solve the ODE
+        ode_sol = odeint(conditional_mode_ode_rhs,
+                            np.atleast_1d(initial_value), 
+                            final_times_sorted,
+                            args=(r,) # r parameter
+                        )
+
+        # Reshape and drop the first value corresponding to the dummy initial value
+        ode_sol = ode_sol[1:,0]
+
+        # Now back out the updated value of the hyper-parameter
+        xi = np.zeros_like(final_times)
+        xi[argsort] = ode_sol
+        new_theta = vartheta*xi
+
+        return new_theta
+
+
+
+
+
+
+
+class MMFGK(FGKSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt( smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
+
+        return w
+    
+
+
+
+def f_tau(x, tau1, tau2):
+    
+    # Compute the absolute value of the input
+    abs_x = np.abs(x)
+    
+    # Apply the piecewise function
+    return np.where(abs_x >= tau1, abs_x, tau2)
+
+
+
+
+class MM2019FGK(FGKSolver):
+
+    """Uses version of MM weights given in Chung2019.
+    q corresponds to the lq norm. 
+    tau1 and tau2 correspond to the thresholds.
+    In the paper, they used tau1 = 10^-10 and tau2 = 10^-16.
+    """
+
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(np.power(f_tau(Lx, weight_params["tau1"], weight_params["tau2"]), weight_params["q"]-2))
+
+        return w
+    
+
+
+
+class IASFGK(FGKSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+
+        theta = theta_update( Lx/np.sqrt(1.0/lambdah), weight_params["hyperpr_r"], weight_params["hyperpr_beta"], 1.0)
+        w = 1.0/np.sqrt(theta)
+
+        return w
+    
+
+
+class VanillaFGK(FGKSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+
+        return np.ones_like(Lx)
+    
+
+
+

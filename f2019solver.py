@@ -77,6 +77,96 @@ def ksparsity_index(vector, k):
 
 
 
+
+
+
+def to_upper_hessenberg(matrix):
+    """
+    Takes a matrix and returns its upper Hessenberg form.
+    Elements below the first subdiagonal are set to zero.
+    
+    Parameters:
+    matrix (np.ndarray): Input matrix (assumed to be 2D).
+    
+    Returns:
+    np.ndarray: Upper Hessenberg matrix.
+    """
+    # Get the number of rows and columns
+    rows, cols = matrix.shape
+    
+    # Make a copy of the matrix to zero out below the first subdiagonal
+    hessenberg_matrix = np.copy(matrix)
+    
+    # Use NumPy's advanced indexing to zero out elements below the first subdiagonal
+    i, j = np.tril_indices(rows, -2)
+    hessenberg_matrix[i, j] = 0
+    
+    return hessenberg_matrix
+
+
+
+
+
+def update_fgk(A, Z, U, M, V, T, L, breakdown_tol=1e-14):
+    """Updates a FGK factorization by one step."""
+
+    broke_down = False
+
+    k = U.shape[1]
+    v = A.T @ U[:,-1]
+    assert k > 0, "invalid U"
+    if k == 1:
+        w = A.T @ U[:,-1]
+        T = np.zeros((1,1))
+        M = np.zeros((2,1))
+    else:
+        T = np.pad(T, ((0, 1), (0, 1)), mode='constant', constant_values=0)
+        M = np.pad(M, ((0, 1), (0, 1)), mode='constant', constant_values=0)
+
+        for j in range(k-1):
+            T[j,k-1] = np.dot(V[:,j], v)
+            v = v - T[j,k-1]*V[:,j]
+            
+    T[k-1,k-1] = np.linalg.norm(v)
+    # Check for breakdown
+    if np.abs(T[k-1,k-1]) < breakdown_tol:
+        broke_down = True
+        return U, M[:-1,:-1], T[:-1,:-1], V, Z, broke_down
+
+    v = v/T[k-1,k-1]
+
+    z = L @ v
+    u = A @ z
+    for j in range(k):
+        M[j,k-1] = np.dot(U[:,j], u)
+        u -= M[j,k-1]*U[:,j]
+
+    M[k,k-1] = np.linalg.norm(u)
+
+    # Check for breakdown
+    if np.abs(M[k,k-1]) < breakdown_tol:
+        broke_down = True
+        return U, M[:-1,:-1], T[:-1,:-1], V, Z, broke_down
+
+    u = u/M[k,k-1]
+
+    if k == 1:
+        V = v[:,None]
+        Z = z[:,None]
+    else:
+        V = np.column_stack((V,v))
+        Z = np.column_stack((Z,z))
+
+    U = np.column_stack((U,u))
+
+    return U, M, T, V, Z, broke_down
+
+
+
+
+
+
+
 class FGK2019Solver:
     """Implements a flexible Golub-Kahan solver.
     """
@@ -283,13 +373,12 @@ class FGK2019Solver:
         return V
     
 
-    def solve(self, n_iter=25, mode="R", x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False):
+    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False, breakdown_tol=1e-14):
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
         assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
         assert self.Lpinv_factory is not None, "Must pass Lpinv_factory at instantiation..."
-        assert mode in ["I", "R", "W"], "Mode must be either I or R."
 
         # Tracking
         tot_matvec_A = 0
@@ -304,6 +393,8 @@ class FGK2019Solver:
         dp_ineq_lhs = []
         dp_ineq_rhs = []
         dp_ineq_chs = []
+        broke = False
+        broke_down_idx = None
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -386,75 +477,36 @@ class FGK2019Solver:
                 Atilde = self.A @ Lpinv
                 Lopinv = Lpinv
 
-            ### Iteration
 
-            vbar = self.A.T @ u
+            ### Update the FGK factorization
             if i == 0:
-                v = vbar
+                U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv.T, breakdown_tol=breakdown_tol )
             else:
-                v = vbar - (V @ (V.T @ vbar))
-            v = v/np.linalg.norm(v)
-            
-            if i == 0:
-                V = v[:,None]
-            else:
-                V = np.column_stack((V,v))
+                U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv.T, breakdown_tol=breakdown_tol )
 
-            z = Lopinv.T @ v
-            if not refresh_basis:
-                if i == 0:
-                    Z = z[:,None]
-                    AZ = (self.A @ z)[:,None]
-                else:
-                    Z = np.column_stack((Z,z))
-                    #AZ = self.A @ Z
-                    AZ = np.column_stack((AZ, self.A @ z))
-            else:
-                
-                Z = np.column_stack([ (Lopinv.T @ V[:, jj]) for jj in range(V.shape[1])  ])
-                AZ = self.A @ Z
-                # z = Lopinv @ (Lopinv.T @ v)
-                # if i == 0:
-                #     Z = z[:,None]
-                #     AZ = (self.A @ z)[:,None]
-                # else:
-                #     Z = np.column_stack((Z,z))
-                #     #AZ = self.A @ Z
-                #     AZ = np.column_stack((AZ, self.A @ z))
+            if broke:
+                broke_down_idx = i
+                break
 
-            ubar = self.A @ z
-            u = ubar - (U @ (U.T @ ubar))
-            u = u/np.linalg.norm(u)
-            U = np.column_stack((U, u))
-            
-            #assert np.isscalar(regparam)
+            # Check V is semi-orthogonal? 
+            V_test = np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) )
+            if V_test > 1e-10:
+                warnings.warn(f"V appears to no longer be semi-orthogonal, failes test with value: {V_test}.", UserWarning)
+
+            # Check U is semi-orthogonal? 
+            U_test = np.linalg.norm( (U.T @ U) - np.eye(U.shape[1]) )
+            if U_test > 1e-10:
+                warnings.warn(f"U appears to no longer be semi-orthogonal, fails test with value {U_test}.", UserWarning)
 
             # Other calculations
-            H = U.T @ AZ
             W = sps.diags(w)
-            e1 = np.zeros(H.shape[0])
+            N = W @ (self.L @ Z)
+            e1 = np.zeros(M.shape[0])
             e1[0] = 1.0
-
-            if mode == "R":
-                # FLSQR-R
-                N = self.L @ Z
-                (Q_N, R_N) = la.qr(N, mode='economic')
-
-            elif mode == "I":
-                # FLSQR-I
-                R_N = np.eye(Z.shape[1])
-
-            elif mode == "W":
-                # FLSQR-W (W L Z)
-                N = W @ (self.L @ Z)
-                (Q_N, R_N) = la.qr(N, mode='economic')
-
-            else:
-                raise NotImplementedError
-
+            (Q_N, R_N) = la.qr(N, mode='economic')
 
             try:
-                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(H), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
             except:
                 proposed_lambdah = 1e-14
 
@@ -465,7 +517,7 @@ class FGK2019Solver:
             lambda_history.append(lambdah)
 
             # Solve for fixed lambda
-            y, _ , _, svals = np.linalg.lstsq(np.vstack( (H, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )),rcond=-1)
+            y, _ , _, svals = np.linalg.lstsq(np.vstack( (M, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )), rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
 
@@ -507,11 +559,14 @@ class FGK2019Solver:
             "x": xfull,
             "V": V,
             "U": U,
-            "H": H,
+            "M": M,
             "Z": Z,
+            "T": T,
             "w": w,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
+            "broke_down": broke,
+            "broke_down_idx": broke_down_idx,
         }
 
         if x_true is not None:
@@ -524,6 +579,8 @@ class FGK2019Solver:
         
 
         return data
+
+
 
 
 
@@ -604,6 +661,33 @@ def theta_update(Lx, r, beta, vartheta):
 
 
 
+def f_tau(x, tau1, tau2):
+    
+    # Compute the absolute value of the input
+    abs_x = np.abs(x)
+    
+    # Apply the piecewise function
+    return np.where(abs_x >= tau1, abs_x, tau2)
+
+
+class MM2019FGK2019(FGK2019Solver):
+
+    """Uses version of MM weights given in Chung 2019.
+    q corresponds to the lq norm. 
+    tau1 and tau2 correspond to the thresholds.
+    """
+
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(np.power(f_tau(Lx, weight_params["tau1"], weight_params["tau2"]), weight_params["q"]-2))
+
+        return w
 
 
 

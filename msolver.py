@@ -958,6 +958,38 @@ class MMGKS(GKSSolver):
         w = np.sqrt( smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
 
         return w
+    
+
+
+def f_tau(x, tau1, tau2):
+    
+    # Compute the absolute value of the input
+    abs_x = np.abs(x)
+    
+    # Apply the piecewise function
+    return np.where(abs_x >= tau1, abs_x, tau2)
+
+
+class MM2019GKS(GKSSolver):
+
+    """Uses version of MM weights given in Chung 2019.
+    q corresponds to the lq norm. 
+    tau1 and tau2 correspond to the thresholds.
+    """
+
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(np.power(f_tau(Lx, weight_params["tau1"], weight_params["tau2"]), weight_params["q"]-2))
+
+        return w
+
+
 
 
 

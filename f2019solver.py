@@ -75,6 +75,49 @@ def ksparsity_index(vector, k):
 
 
 
+def hoyer_sparsity(x):
+    """
+    Computes the Hoyer sparsity measure for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Hoyer sparsity measure, between 0 and 1.
+    """
+    n = len(x)
+    norm_1 = np.linalg.norm(x, 1)  # L1 norm of x
+    norm_2 = np.linalg.norm(x, 2)  # L2 norm of x
+
+    if norm_2 == 0:
+        return 0  # A zero vector is fully sparse, returning 0.
+    
+    sparsity = (np.sqrt(n) - (norm_1 / norm_2)) / (np.sqrt(n) - 1)
+    return sparsity
+
+
+def gini_index(x):
+    """
+    Computes the Gini index for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Gini index, between 0 and 1.
+    """
+    if np.all(x == 0):
+        return 0.0  # Gini index for a zero vector is 0 (least sparse)
+
+    x = np.sort(np.abs(x))  # Sort the absolute values of the vector
+    n = len(x)
+    index = np.arange(1, n + 1)  # Index for each element in the sorted array
+
+    # Gini formula
+    gini = (2 * np.sum(index * x)) / (n * np.sum(x)) - (n + 1) / n
+    return gini
+
+
 
 
 
@@ -383,7 +426,7 @@ class FGK2019Solver:
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
-        assert mode in ["I", "R", "W"], "Mode must be either I, R or W."
+        assert mode in ["I", "R", "W", "IRW"], "Mode must be either I, R, W, or IRW."
 
         # Tracking
         tot_matvec_A = 0
@@ -395,6 +438,8 @@ class FGK2019Solver:
         haar_history = []
         cond_ests = []
         ksparsity_indices = []
+        hoyer_indices = []
+        gini_indices = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
         dp_ineq_chs = []
@@ -430,6 +475,13 @@ class FGK2019Solver:
             if self.img_shape is not None:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), xbar.reshape(self.img_shape))
                 haar_history.append(haar_calc)
+        
+
+        # Gini and hoyer
+        gini = gini_index(x)
+        gini_indices.append(gini)
+        hoyer_index = hoyer_sparsity(x)
+        hoyer_indices.append(hoyer_index)
 
 
         # Compute k-sparsity?
@@ -470,8 +522,10 @@ class FGK2019Solver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
-            Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
-            Atilde = self.A @ Lpinv
+            if mode in ["I", "R", "W"]:
+                Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
+            else:
+                Lpinv = jlinops.MatrixLinearOperator(sps.diags((1.0/w)**2))
             Lopinv = Lpinv
 
 
@@ -507,7 +561,7 @@ class FGK2019Solver:
             elif mode == "I":
                 # FLSQR-I (I)
                 R_N = np.eye(M.shape[1])
-            elif mode == "W":
+            elif (mode == "W") or (mode == "IRW"):
                 # FLSQR-W (W Z)
                 N = W @ Z
                 (Q_N, R_N) = la.qr(N, mode='economic')
@@ -551,6 +605,11 @@ class FGK2019Solver:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), xbar.reshape(self.img_shape))
                     haar_history.append(haar_calc)
 
+            # Gini and hoyer
+            gini = gini_index(x)
+            gini_indices.append(gini)
+            hoyer_index = hoyer_sparsity(x)
+            hoyer_indices.append(hoyer_index)
 
             # Compute k-sparsity?
             if ksparsity is not None:
@@ -572,6 +631,9 @@ class FGK2019Solver:
             "broke_down": broke,
             "broke_down_idx": broke_down_idx,
         }
+
+        data["hoyer_indices"] = np.asarray(hoyer_indices)
+        data["gini_indices"] = np.asarray(gini_indices)
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)

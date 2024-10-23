@@ -75,6 +75,52 @@ def ksparsity_index(vector, k):
 
 
 
+def hoyer_sparsity(x):
+    """
+    Computes the Hoyer sparsity measure for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Hoyer sparsity measure, between 0 and 1.
+    """
+    n = len(x)
+    norm_1 = np.linalg.norm(x, 1)  # L1 norm of x
+    norm_2 = np.linalg.norm(x, 2)  # L2 norm of x
+
+    if norm_2 == 0:
+        return 0  # A zero vector is fully sparse, returning 0.
+    
+    sparsity = (np.sqrt(n) - (norm_1 / norm_2)) / (np.sqrt(n) - 1)
+    return sparsity
+
+
+def gini_index(x):
+    """
+    Computes the Gini index for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Gini index, between 0 and 1.
+    """
+    if np.all(x == 0):
+        return 0.0  # Gini index for a zero vector is 0 (least sparse)
+
+    x = np.sort(np.abs(x))  # Sort the absolute values of the vector
+    n = len(x)
+    index = np.arange(1, n + 1)  # Index for each element in the sorted array
+
+    # Gini formula
+    gini = (2 * np.sum(index * x)) / (n * np.sum(x)) - (n + 1) / n
+    return gini
+
+
+
+
+
 class GKBSolver:
     """Implements a priorconditioned Golub-Kahan bidiagonalization -based solver.
     """
@@ -298,6 +344,8 @@ class GKBSolver:
         haar_history = []
         cond_ests = []
         ksparsity_indices = []
+        hoyer_indices = []
+        gini_indices = []
         dp_ineq_lhs = []
         dp_ineq_rhs = []
         dp_ineq_chs = []
@@ -331,6 +379,12 @@ class GKBSolver:
             if self.img_shape is not None:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                 haar_history.append(haar_calc)
+
+        # Gini and hoyer
+        gini = gini_index(self.L @ x)
+        gini_indices.append(gini)
+        hoyer_index = hoyer_sparsity(self.L @ x)
+        hoyer_indices.append(hoyer_index)
 
         # Compute k-sparsity?
         if ksparsity is not None:
@@ -422,6 +476,14 @@ class GKBSolver:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                     haar_history.append(haar_calc)
 
+
+            # Gini and hoyer
+            gini = gini_index(self.L @ x)
+            gini_indices.append(gini)
+            hoyer_index = hoyer_sparsity(self.L @ x)
+            hoyer_indices.append(hoyer_index)
+
+
             # Compute k-sparsity?
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
@@ -438,6 +500,9 @@ class GKBSolver:
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
         }
+
+        data["hoyer_indices"] = np.asarray(hoyer_indices)
+        data["gini_indices"] = np.asarray(gini_indices)
 
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
@@ -556,7 +621,7 @@ def f_tau(x, tau1, tau2):
 
 
 
-class MM2019GKS(GKBSolver):
+class MM2019GKB(GKBSolver):
 
     """Uses version of MM weights given in Chung2019.
     q corresponds to the lq norm. 

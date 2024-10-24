@@ -64,6 +64,50 @@ def ksparsity_index(vector, k):
 
 
 
+def hoyer_sparsity(x):
+    """
+    Computes the Hoyer sparsity measure for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Hoyer sparsity measure, between 0 and 1.
+    """
+    n = len(x)
+    norm_1 = np.linalg.norm(x, 1)  # L1 norm of x
+    norm_2 = np.linalg.norm(x, 2)  # L2 norm of x
+
+    if norm_2 == 0:
+        return 0  # A zero vector is fully sparse, returning 0.
+    
+    sparsity = (np.sqrt(n) - (norm_1 / norm_2)) / (np.sqrt(n) - 1)
+    return sparsity
+
+
+def gini_index(x):
+    """
+    Computes the Gini index for a given vector x.
+
+    Parameters:
+    x (numpy array): Input vector.
+
+    Returns:
+    float: Gini index, between 0 and 1.
+    """
+    if np.all(x == 0):
+        return 0.0  # Gini index for a zero vector is 0 (least sparse)
+
+    x = np.sort(np.abs(x))  # Sort the absolute values of the vector
+    n = len(x)
+    index = np.arange(1, n + 1)  # Index for each element in the sorted array
+
+    # Gini formula
+    gini = (2 * np.sum(index * x)) / (n * np.sum(x)) - (n + 1) / n
+    return gini
+
+
+
 
 def compute_V_matrix_k(A, k):
     """
@@ -351,6 +395,8 @@ class GKSSolver:
         dp_ineq_rhs = []
         dp_ineq_chs = []
         ksparsity_indices = []
+        hoyer_indices = []
+        gini_indices = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -396,6 +442,12 @@ class GKSSolver:
             if self.img_shape is not None:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                 haar_history.append(haar_calc)
+
+        # Gini and hoyer
+        gini = gini_index(self.L @ x)
+        gini_indices.append(gini)
+        hoyer_index = hoyer_sparsity(self.L @ x)
+        hoyer_indices.append(hoyer_index)
 
         # Compute k-sparsity?
         if ksparsity is not None:
@@ -512,6 +564,13 @@ class GKSSolver:
                 if self.img_shape is not None:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                     haar_history.append(haar_calc)
+
+            # Gini and hoyer
+            gini = gini_index(self.L @ x)
+            gini_indices.append(gini)
+            hoyer_index = hoyer_sparsity(self.L @ x)
+            hoyer_indices.append(hoyer_index)
+
             # Compute k-sparsity?
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
@@ -616,6 +675,9 @@ class GKSSolver:
             data["ssim_history"] = np.asarray(ssim_history)
             data["haar_history"] = np.asarray(haar_history)
 
+        data["hoyer_indices"] = np.asarray(hoyer_indices)
+        data["gini_indices"] = np.asarray(gini_indices)
+
 
         if ksparsity is not None:
             data["ksparsity_indices"] = np.asarray(ksparsity_indices)
@@ -646,6 +708,8 @@ class GKSSolver:
         rre_history = []
         ssim_history = []
         ksparsity_indices = []
+        hoyer_indices = []
+        gini_indices = []
         haar_history = []
         cond_ests = []
         dp_ineq_lhs = []
@@ -691,6 +755,12 @@ class GKSSolver:
             if self.img_shape is not None:
                 haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                 haar_history.append(haar_calc)
+
+        # Gini and hoyer
+        gini = gini_index(self.L @ x)
+        gini_indices.append(gini)
+        hoyer_index = hoyer_sparsity(self.L @ x)
+        hoyer_indices.append(hoyer_index)
 
         # Compute k-sparsity?
         if ksparsity is not None:
@@ -837,6 +907,13 @@ class GKSSolver:
                 if self.img_shape is not None:
                     haar_calc, _, _ = haar_psi(x_true.reshape(self.img_shape), x.reshape(self.img_shape))
                     haar_history.append(haar_calc)
+
+            # Gini and hoyer
+            gini = gini_index(self.L @ x)
+            gini_indices.append(gini)
+            hoyer_index = hoyer_sparsity(self.L @ x)
+            hoyer_indices.append(hoyer_index)
+
             # Compute k-sparsity?
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
@@ -917,12 +994,13 @@ class GKSSolver:
             "xker": xker,
         }
 
+        data["hoyer_indices"] = np.asarray(hoyer_indices)
+        data["gini_indices"] = np.asarray(gini_indices)
+
         if x_true is not None:
             data["rre_history"] = np.asarray(rre_history)
             data["ssim_history"] = np.asarray(ssim_history)
             data["haar_history"] = np.asarray(haar_history)
-
-
 
 
         if ksparsity is not None:
@@ -958,6 +1036,38 @@ class MMGKS(GKSSolver):
         w = np.sqrt( smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
 
         return w
+    
+
+
+def f_tau(x, tau1, tau2):
+    
+    # Compute the absolute value of the input
+    abs_x = np.abs(x)
+    
+    # Apply the piecewise function
+    return np.where(abs_x >= tau1, abs_x, tau2)
+
+
+class MM2019GKS(GKSSolver):
+
+    """Uses version of MM weights given in Chung 2019.
+    q corresponds to the lq norm. 
+    tau1 and tau2 correspond to the thresholds.
+    """
+
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(np.power(f_tau(Lx, weight_params["tau1"], weight_params["tau2"]), weight_params["q"]-2))
+
+        return w
+
+
 
 
 

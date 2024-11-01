@@ -43,7 +43,7 @@ except:
     # raise Exception("Error with matlab.engine, make sure it is installed correctly.")
 
 
-from trips.utilities.weights import smoothed_holder_weights
+# from trips.utilities.weights import smoothed_holder_weights
 from trips.utilities.decompositions import golub_kahan
 
 from trips.utilities.reg_param.discrepancy_principle import discrepancy_principle
@@ -54,6 +54,15 @@ from regparam_selection import optimal_regparam, optimal_regparam_ssim
 
 
 from haarpsi import haar_psi
+
+
+
+
+
+# Define smoothed holder weighting function
+def mm_weights(x, epsilon, p):
+    z = (x**2 + epsilon**2)**( (p-2.0)/2.0 )
+    return z
 
 
 
@@ -606,7 +615,7 @@ class MMGKB(GKBSolver):
 
     def update_weights(self, Lx, lambdah, weight_params):
         
-        w = np.sqrt( smoothed_holder_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
+        w = np.sqrt( mm_weights( Lx, epsilon=weight_params["epsilon"], p=weight_params["q"] ) )
 
         return w
 
@@ -669,6 +678,81 @@ class VanillaGKB(GKBSolver):
 
         return np.ones_like(Lx)
     
+
+
+
+
+
+
+## MM methods for adherring to specific papers
+
+class MM1GKB(GKBSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(  mm_weights( Lx, epsilon=1.0, p=weight_params["q"] ) )
+
+        return w
+    
+
+class MM2GKB(GKBSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(  mm_weights( Lx, epsilon=0.01, p=weight_params["q"] ) )
+
+        return w
+    
+
+class MM3GKB(GKBSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(  mm_weights( Lx, epsilon=1e-10, p=weight_params["q"] ) )
+
+        return w
+    
+
+
+class MM4GKB(GKBSolver):
+
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt( np.power(f_tau(Lx, 1e-10, 1e-16), weight_params["q"]-2) )
+
+        return w
+    
+
+
+
+
+
+
+
+
+
+
+
 
 
 

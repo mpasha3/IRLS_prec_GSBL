@@ -346,6 +346,7 @@ class GKBSolver:
         # Tracking
         tot_matvec_A = 0
         tot_matvec_L = 0 
+        tot_matvec_WLpinv = 0
         lambda_history = []
         residual_history = []
         rre_history = []
@@ -370,7 +371,7 @@ class GKBSolver:
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
         else:
             x = x0
             
@@ -405,6 +406,7 @@ class GKBSolver:
         Lpinv = self.Lpinv_factory(w)
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+            tot_matvec_A += self.K.A.shape[1] # matvecs with A
             Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
             Atilde = self.A @ Lopinv
         else:
@@ -415,7 +417,7 @@ class GKBSolver:
             xker = self.K @ (AKpinv @ self.b)
             Axker = self.A @ xker
             c = self.b - Axker
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
         else:
             xker = np.zeros(self.A.shape[1])
             c = self.b
@@ -427,9 +429,9 @@ class GKBSolver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
+            tot_matvec_L += 1 # matvec with L
             Lpinv = self.Lpinv_factory(w)
             if self.K is not None:
-                AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
                 Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
                 Atilde = self.A @ Lopinv
             else:
@@ -439,6 +441,8 @@ class GKBSolver:
 
             # Compute the GKB
             U, B, V = golub_kahan(Atilde, c, ii+1, dp_stop=False)
+            tot_matvec_A += 2*(ii+1) # matvecs with WLpinv
+            tot_matvec_WLpinv += 2*(ii+1)  # matvecs with WLpinv
 
             # Choose regularization parameter
             e1 = np.zeros(B.shape[0])
@@ -465,6 +469,7 @@ class GKBSolver:
 
             # Recover full solution
             x = Lopinv @ (V @ y) # Project back onto x space
+            tot_matvec_WLpinv += 1 # matvec with WLpinv
             if self.K is not None:
                 xfull = x + xker
             else:
@@ -508,6 +513,9 @@ class GKBSolver:
             "Lopinv": Lopinv,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
+            "tot_matvec_A": tot_matvec_A,
+            "tot_matvec_L": tot_matvec_L,
+            "tot_matvec_WLpinv": tot_matvec_WLpinv,
         }
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)

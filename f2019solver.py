@@ -438,6 +438,7 @@ class FGK2019Solver:
         # Tracking
         tot_matvec_A = 0
         tot_matvec_L = 0 
+        tot_matvec_WLpinv = 0
         lambda_history = []
         residual_history = []
         rre_history = []
@@ -464,9 +465,11 @@ class FGK2019Solver:
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
+            tot_matvec_WLpinv += 1 # matvec with WLpinv
         else:
             x = self._L @ x0
+            tot_matvec_WLpinv += 1 # matvec with WLpinv
             
         # Metrics
         if x_true is not None:
@@ -498,19 +501,19 @@ class FGK2019Solver:
 
         # Get initial weights and pseudoinverses
         w = self.update_weights(self.L @ x, lambdah, weight_params)
+        # tot_matvec_L += 1 # matvec with L
         Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+            tot_matvec_A += self.K.A.shape[1] # matvecs with A
             Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
             Atilde = self.A @ Lopinv
         else:
             Atilde = self.A @ Lpinv
             Lopinv = Lpinv
 
- 
         xker = np.zeros(self.A.shape[1])
         c = self.b
-
 
         # Initial calculations
         #xinc = self.L @ (Lopinv @ ( self.L @ x ))
@@ -529,6 +532,7 @@ class FGK2019Solver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
+            # tot_matvec_L += 1 # matvec with L
             Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
             # if mode in ["I", "R", "W"]:
             #     Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
@@ -542,7 +546,9 @@ class FGK2019Solver:
                 U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv, breakdown_tol=breakdown_tol )
             else:
                 U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv, breakdown_tol=breakdown_tol )
-
+            tot_matvec_A += 2 # matvec with A
+            tot_matvec_WLpinv += 2 # matvec with WLpinv (Lpinv)
+            
             if broke:
                 broke_down_idx = i
                 break
@@ -598,6 +604,7 @@ class FGK2019Solver:
             x = Z @ y # Project back onto z space
             xfull = x
             xbar = self._Linv @ xfull
+            tot_matvec_WLpinv += 1 # matvec with WLpinv (Lpinv)
 
 
             # Metrics
@@ -634,6 +641,9 @@ class FGK2019Solver:
             "Z": Z,
             "T": T,
             "w": w,
+            "tot_matvec_A": tot_matvec_A,
+            "tot_matvec_L": tot_matvec_L,
+            "tot_matvec_WLpinv": tot_matvec_WLpinv,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
             "broke_down": broke,

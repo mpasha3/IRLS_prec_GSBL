@@ -396,6 +396,7 @@ class GKSSolver:
         # Tracking
         tot_matvec_A = 0
         tot_matvec_L = 0 
+        tot_matvec_WLpinv = 0
         lambda_history = []
         residual_history = []
         rre_history = []
@@ -433,12 +434,13 @@ class GKSSolver:
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # 1 A matvec for A^T b
         else:
             x = x0
 
-        if xker is not None:
-            c = self.b - (self.A @ xker)
+        #if xker is not None:
+            #c = self.b - (self.A @ xker)
+            #tot_matvec_A += 1 # 1 A matvec for A x_ker
 
         if err_norm_sq is None:
             err_norm_sq = len(self.b)
@@ -474,7 +476,7 @@ class GKSSolver:
         else:
             V = Vinit.copy()
         dim_size = init_dim
-        tot_matvec_A += (2*(init_dim - 1)) + 1 
+        tot_matvec_A += (2*(init_dim - 1)) + 1
 
         # If we passed x0, add it to the basis as another column.
         if x0 is not None:
@@ -485,13 +487,13 @@ class GKSSolver:
             print("Augmented basis with initial guess!")
 
         AV = self.A @ V 
-        tot_matvec_A += V.shape[1]
+        tot_matvec_A += V.shape[1] # matvecs for AV
         Q_A, R_A = qr(AV, mode='economic') 
         
 
         # Get initial LV
-        LV = self.L @ V
-        tot_matvec_L += init_dim
+        LV = self.L @ V 
+        tot_matvec_L += V.shape[1] # matvecs for LV
 
         # For cubic dp
         self.beta0 = None
@@ -510,7 +512,7 @@ class GKSSolver:
 
             # Update weights and get new QR factorization of W L V
             Lx = self.L @ x
-            tot_matvec_L += 1
+            tot_matvec_L += 1 # one more L matvec
             w = self.update_weights(Lx, lambdah, weight_params)
             W = sps.diags(w)
             WLV = W @ LV
@@ -607,8 +609,8 @@ class GKSSolver:
             Lvn = vn
             Lvn = self.L * vn
             LV = np.column_stack((LV, Lvn))
-            tot_matvec_A += 2
-            tot_matvec_L += 2
+            tot_matvec_A += 2 # matvecs with A
+            tot_matvec_L += 2 # matvecs with L
             residual_history.append(np.linalg.norm(r))
             dim_size += 1
 
@@ -620,8 +622,8 @@ class GKSSolver:
             if (dim_size == max_dim) and recycling:
                 
                 # Update weights and get new QR factorization of W L V
-                LV = self.L @ V
-                tot_matvec_L += dim_size
+                #LV = self.L @ V # matvecs with L
+                #tot_matvec_L += V.shape[1]
                 WLV = W @ LV
                 Q_WL, R_WL = qr(WLV, mode='economic') 
                 #Q_L, R_L = qr(LV, mode='economic') 
@@ -634,8 +636,8 @@ class GKSSolver:
                 dim_size = min_dim
                 AV = self.A @ V 
                 LV = self.L @ V
-                tot_matvec_A += dim_size
-                tot_matvec_L += dim_size
+                tot_matvec_A += V.shape[1] # matvecs with A
+                tot_matvec_L += V.shape[1] # matvecs with L
                 Q_A, R_A = qr(AV, mode='economic')
 
             if (dim_size == restart_dim) and restarting:
@@ -656,9 +658,9 @@ class GKSSolver:
                 
                 # Update weights and get new QR factorization of W L V
                 LV = self.L @ V
-                tot_matvec_L += dim_size
+                tot_matvec_L += V.shape[1] # matvecs with L
                 AV = self.A @ V 
-                tot_matvec_A += dim_size
+                tot_matvec_A += V.shape[1] # matvecs with A
                 #WLV = W @ LV
                 #Q_WL, R_WL = qr(WLV, mode='economic') 
                 Q_A, R_A = qr(AV, mode='economic')
@@ -672,6 +674,7 @@ class GKSSolver:
             "lambdah": lambdah,
             "tot_matvec_A": tot_matvec_A,
             "tot_matvec_L": tot_matvec_L,
+            "tot_matvec_WLpinv": tot_matvec_WLpinv,
             "residual_history": np.asarray(residual_history),
             "lambda_history": np.asarray(lambda_history),
             "V": V,
@@ -714,6 +717,7 @@ class GKSSolver:
         # Tracking
         tot_matvec_A = 0
         tot_matvec_L = 0 
+        tot_matvec_WLpinv = 0
         lambda_history = []
         residual_history = []
         rre_history = []
@@ -751,7 +755,7 @@ class GKSSolver:
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
         else:
             x = x0
 
@@ -779,9 +783,11 @@ class GKSSolver:
 
         # Get initial weights
         w = self.update_weights(self.L @ x, lambdah, weight_params)
+        tot_matvec_L += 1 # matvec with L
         Lpinv = self.Lpinv_factory(w)
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+            tot_matvec_A += self.K.A.shape[1] # matvecs with A for AKpinv
             Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
             Atilde = self.A @ Lopinv
         else:
@@ -791,8 +797,8 @@ class GKSSolver:
         if self.K is not None:
             xker = self.K @ (AKpinv @ self.b)
             Axker = self.A @ xker
+            tot_matvec_A += 1 # A matvec for A x_ker
             c = self.b - Axker
-            tot_matvec_A += 1
         else:
             xker = np.zeros(self.A.shape[1])
             c = self.b
@@ -802,10 +808,8 @@ class GKSSolver:
         #(U, B, V) = golub_kahan(Atilde, c, init_dim, False, **kwargs) 
         qr_fac = np.linalg.qr(V)
         V = qr_fac.Q
-        if self.K is None:
-            tot_matvec_A += 2*init_dim
-        else:
-            tot_matvec_A += 4*init_dim
+        tot_matvec_A += 2*(V.shape[1]-1) + 1 # matvec with A
+        tot_matvec_WLpinv += 2*(V.shape[1]-1) + 1 # matvec with WLpinv
         dim_size = V.shape[1]
         
 
@@ -813,6 +817,8 @@ class GKSSolver:
         if x0 is not None:
             # tmp = x0 - xker
             tmp = self.L @ (Lopinv @ (self.L @ x0)) # implied initialization in transformed space
+            tot_matvec_L += 2 # matvec with L
+            tot_matvec_WLpinv += 1 # matvec with WLpinv
             vnew = tmp - (V @ (V.T @ tmp) )
             vnew /= np.linalg.norm(vnew)
             V = np.column_stack((V, vnew))
@@ -832,7 +838,7 @@ class GKSSolver:
             
             # Update weights and get new QR factorization of W L V
             Lx = self.L @ x
-            tot_matvec_L += 1
+            tot_matvec_L += 1 # matvec with L
             w = self.update_weights(Lx, lambdah, weight_params)
             W = sps.diags(w)
             
@@ -847,13 +853,10 @@ class GKSSolver:
 
             # Get new QR factorization for Atilde
             AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
+            tot_matvec_A += V.shape[1] # matvecs with A
+            tot_matvec_WLpinv += V.shape[1] # matvecs with WLpinv
             AA = AtildeV
             (Q_Atilde, R_Atilde) = la.qr(AA, mode='economic') 
-
-            if self.K is None: 
-                tot_matvec_A += V.shape[1]
-            else:
-                tot_matvec_A += 2*V.shape[1]
 
             # What used to be "R_L", is now just the identity matrix
             R_L = np.eye(V.shape[1])
@@ -908,6 +911,7 @@ class GKSSolver:
                 x = (Lopinv @ z) + xker # Project back onto x space
             else:
                 x = Lpinv @ z
+            tot_matvec_WLpinv += 1 # matvec with WLpinv
 
             if x_true is not None: 
                 rre_history.append( np.linalg.norm(x - x_true)/x_true_norm )
@@ -945,11 +949,10 @@ class GKSSolver:
             V = np.column_stack((V, vn))
             residual_history.append(la.norm(r))
             dim_size += 1
-
-            if self.K is None:
-                tot_matvec_A += 2*(V.shape[1]-1)
-            else:
-                tot_matvec_A += 4*(V.shape[1]-1)
+            tot_matvec_A += (V.shape[1]-1) # matvecs with A
+            tot_matvec_WLpinv += (V.shape[1]-1) # matvecs with WLpinv
+        
+    
 
 
             # Restarting
@@ -973,6 +976,8 @@ class GKSSolver:
 
                 # Get new QR factorization for Atilde
                 AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
+                tot_matvec_A += V.shape[1] # matvecs with A
+                tot_matvec_WLpinv += V.shape[1] # matvecs with WLpinv
                 AA = AtildeV
                 (Q_Atilde, R_Atilde) = la.qr(AA, mode='economic') 
 
@@ -995,6 +1000,7 @@ class GKSSolver:
             "lambdah": lambdah,
             "tot_matvec_A": tot_matvec_A,
             "tot_matvec_L": tot_matvec_L,
+            "tot_matvec_WLpinv": tot_matvec_WLpinv,
             "residual_history": np.asarray(residual_history),
             "lambda_history": np.asarray(lambda_history),
             "V": V,

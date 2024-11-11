@@ -441,6 +441,7 @@ class FGKSolver:
         # Tracking
         tot_matvec_A = 0
         tot_matvec_L = 0 
+        tot_matvec_WLpinv = 0
         lambda_history = []
         residual_history = []
         rre_history = []
@@ -467,7 +468,7 @@ class FGKSolver:
         # Initialization
         if x0 is None:
             x = self.A.T @ self.b
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
         else:
             x = x0
             
@@ -495,12 +496,13 @@ class FGKSolver:
         if ksparsity is not None:
             ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
-
         # Get initial weights and pseudoinverses
         w = self.update_weights(self.L @ x, lambdah, weight_params)
+        tot_matvec_L += 1 # matvec with L
         Lpinv = self.Lpinv_factory(w)
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
+            tot_matvec_A += self.K.A.shape[1] # matvecs with A
             Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
             Atilde = self.A @ Lopinv
         else:
@@ -511,7 +513,7 @@ class FGKSolver:
             xker = self.K @ (AKpinv @ self.b)
             Axker = self.A @ xker
             c = self.b - Axker
-            tot_matvec_A += 1
+            tot_matvec_A += 1 # matvec with A
         else:
             xker = np.zeros(self.A.shape[1])
             c = self.b
@@ -533,21 +535,22 @@ class FGKSolver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
+            tot_matvec_L += 1 # matvec with L
             Lpinv = self.Lpinv_factory(w)
             if self.K is not None:
-                AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
                 Lopinv = ( jlinops.IdentityOperator( (self.A.shape[1], self.A.shape[1])  ) - self.K @ (AKpinv @ self.A)  ) @ Lpinv
                 Atilde = self.A @ Lopinv
             else:
                 Atilde = self.A @ Lpinv
                 Lopinv = Lpinv
 
-
             ### Update the FGK factorization
             if i == 0:
-                U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv @ Lopinv.T , breakdown_tol=breakdown_tol )
+                U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv @ Lopinv.T , breakdown_tol=breakdown_tol)
             else:
                 U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv @ Lopinv.T, breakdown_tol=breakdown_tol )
+            tot_matvec_A += 2 # matvecs with A
+            tot_matvec_WLpinv += 2 # matvecs with WLpinv
 
             if broke:
                 broke_down_idx = i
@@ -566,6 +569,7 @@ class FGKSolver:
             # Other calculations
             W = sps.diags(w)
             N = W @ (self.L @ Z)
+            tot_matvec_L += Z.shape[1] # matvecs with L
             e1 = np.zeros(M.shape[0])
             e1[0] = 1.0
             (Q_N, R_N) = la.qr(N, mode='economic')
@@ -633,6 +637,9 @@ class FGKSolver:
             "Z": Z,
             "T": T,
             "w": w,
+            "tot_matvec_A": tot_matvec_A,
+            "tot_matvec_L": tot_matvec_L,
+            "tot_matvec_WLpinv": tot_matvec_WLpinv,
             "lambda_history": np.asarray(lambda_history),
             "cond_ests": np.asarray(cond_ests),
             "broke_down": broke,
@@ -875,6 +882,7 @@ class MM4FGK(FGKSolver):
 
 
     def update_weights(self, Lx, lambdah, weight_params):
+
         
         w = np.sqrt( np.power(f_tau(Lx, 1e-10, 1e-16), weight_params["q"]-2) )
 

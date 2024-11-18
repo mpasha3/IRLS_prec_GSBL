@@ -403,6 +403,7 @@ class GKBSolver:
 
         # Get initial weights and pseudoinverses
         w = self.update_weights(self.L @ x, lambdah, weight_params)
+        tot_matvec_L += 1 # matvec with L
         Lpinv = self.Lpinv_factory(w)
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
@@ -516,7 +517,9 @@ class GKBSolver:
             "tot_matvec_A": tot_matvec_A,
             "tot_matvec_L": tot_matvec_L,
             "tot_matvec_WLpinv": tot_matvec_WLpinv,
+            "n_completed_iterations": n_iter,
         }
+
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)
         data["gini_indices"] = np.asarray(gini_indices)

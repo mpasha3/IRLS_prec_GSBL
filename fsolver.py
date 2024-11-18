@@ -547,8 +547,12 @@ class FGKSolver:
             ### Update the FGK factorization
             if i == 0:
                 U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv @ Lopinv.T , breakdown_tol=breakdown_tol)
+                LZ = self.L @ Z
+                tot_matvec_L += 1
             else:
                 U, M, T, V, Z, broke = update_fgk(self.A, Z, U, M, V, T, Lopinv @ Lopinv.T, breakdown_tol=breakdown_tol )
+                LZ = np.column_stack((LZ, self.L @ Z[:,-1]))
+                tot_matvec_L += 1
             tot_matvec_A += 2 # matvecs with A
             tot_matvec_WLpinv += 2 # matvecs with WLpinv
 
@@ -568,8 +572,9 @@ class FGKSolver:
 
             # Other calculations
             W = sps.diags(w)
-            N = W @ (self.L @ Z)
-            tot_matvec_L += Z.shape[1] # matvecs with L
+            # N = W @ (self.L @ Z)
+            N = W @ LZ
+            #tot_matvec_L += Z.shape[1] # matvecs with L
             e1 = np.zeros(M.shape[0])
             e1[0] = 1.0
             (Q_N, R_N) = la.qr(N, mode='economic')
@@ -645,6 +650,12 @@ class FGKSolver:
             "broke_down": broke,
             "broke_down_idx": broke_down_idx,
         }
+
+        if broke:
+            data["n_completed_iterations"] = broke_down_idx
+        else:
+            data["n_completed_iterations"] = n_iter
+
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)
         data["gini_indices"] = np.asarray(gini_indices)

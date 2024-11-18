@@ -45,6 +45,8 @@ from regparam_selection import optimal_regparam, optimal_regparam_ssim
 
 from haarpsi import haar_psi
 
+import time
+
 
 
 
@@ -409,6 +411,7 @@ class GKSSolver:
         ksparsity_indices = []
         hoyer_indices = []
         gini_indices = []
+        end_time = time.time()
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -682,6 +685,7 @@ class GKSSolver:
             "dp_ineq_lhs": np.asarray(dp_ineq_lhs),
             "dp_ineq_rhs": np.asarray(dp_ineq_rhs),
             "dp_ineq_chs": np.asarray(dp_ineq_chs),
+            "n_completed_iterations": n_iter,
         }
 
         if x_true is not None:
@@ -1009,6 +1013,7 @@ class GKSSolver:
             "dp_ineq_rhs": np.asarray(dp_ineq_rhs),
             "dp_ineq_chs": np.asarray(dp_ineq_chs),
             "xker": xker,
+            "n_completed_iterations": n_iter,
         }
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)
@@ -1035,7 +1040,6 @@ class GKSSolver:
 
         return data
     
-
 
 
 

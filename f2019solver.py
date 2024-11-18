@@ -501,7 +501,7 @@ class FGK2019Solver:
 
         # Get initial weights and pseudoinverses
         w = self.update_weights(self.L @ x, lambdah, weight_params)
-        # tot_matvec_L += 1 # matvec with L
+        tot_matvec_L += 1 # matvec with L
         Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
         if self.K is not None:
             AKpinv = jlinops.QRPinvOperator( jlinops.MatrixLinearOperator(self.A.matmat(self.K.A)) )
@@ -649,6 +649,11 @@ class FGK2019Solver:
             "broke_down": broke,
             "broke_down_idx": broke_down_idx,
         }
+
+        if broke:
+            data["n_completed_iterations"] = broke_down_idx
+        else:
+            data["n_completed_iterations"] = n_iter
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)
         data["gini_indices"] = np.asarray(gini_indices)

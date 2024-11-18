@@ -652,6 +652,11 @@ class FGKIRWSolver:
             "tot_matvec_WLpinv": tot_matvec_WLpinv,
         }
 
+        if broke:
+            data["n_completed_iterations"] = broke_down_idx
+        else:
+            data["n_completed_iterations"] = n_iter
+
         data["hoyer_indices"] = np.asarray(hoyer_indices)
         data["gini_indices"] = np.asarray(gini_indices)
 

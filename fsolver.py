@@ -901,7 +901,19 @@ class MM4FGK(FGKSolver):
     
 
 
+class MMXFGK(FGKSolver):
 
+    def __init__(self, A, L, b, noise_var=None, Lpinv_factory=None, K=None, img_shape=None):
+
+        super().__init__(A, L, b, noise_var=noise_var, Lpinv_factory=Lpinv_factory, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(  mm_weights( Lx, epsilon=1e-3, p=weight_params["q"] ) )
+
+        return w
+    
 
 
 

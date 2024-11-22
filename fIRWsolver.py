@@ -895,7 +895,18 @@ class MM4FGKIRW(FGKIRWSolver):
         return w
     
 
+class MMXFGKIRW(FGKIRWSolver):
 
+    def __init__(self,  A, L, Linv, b, noise_var=None, K=None, img_shape=None):
+
+        super().__init__(A, L, Linv, b, noise_var=noise_var, K=K, img_shape=img_shape)
+
+
+    def update_weights(self, Lx, lambdah, weight_params):
+        
+        w = np.sqrt(  mm_weights( Lx, epsilon=1e-3, p=weight_params["q"] ) )
+
+        return w
 
 
 

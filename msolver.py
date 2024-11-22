@@ -391,7 +391,7 @@ class GKSSolver:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, ksparsity=None, regparam_kwargs={}, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, regparam="dp", augment=True, restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, ksparsity=None, regparam_kwargs={}, **kwargs):
         """Driver for GKS solver.
         """
 
@@ -482,7 +482,7 @@ class GKSSolver:
         tot_matvec_A += (2*(init_dim - 1)) + 1
 
         # If we passed x0, add it to the basis as another column.
-        if x0 is not None:
+        if (x0 is not None) and augment:
             vnew = x0 - (V @ (V.T @ x0) )
             vnew /= np.linalg.norm(vnew)
             V = np.column_stack((V, vnew))
@@ -707,7 +707,7 @@ class GKSSolver:
         
 
 
-    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, ksparsity=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
+    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", augment=True, restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, ksparsity=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
         """Driver for GKS solver.
         """
         valid_regparams = ["dp3", "dp"]
@@ -818,7 +818,7 @@ class GKSSolver:
         
 
         # If x0 is passed, augment initial basis
-        if x0 is not None:
+        if (x0 is not None) and augment:
             # tmp = x0 - xker
             tmp = self.L @ (Lopinv @ (self.L @ x0)) # implied initialization in transformed space
             tot_matvec_L += 2 # matvec with L
@@ -956,9 +956,6 @@ class GKSSolver:
             tot_matvec_A += (V.shape[1]-1) # matvecs with A
             tot_matvec_WLpinv += (V.shape[1]-1) # matvecs with WLpinv
         
-    
-
-
             # Restarting
             if (dim_size == restart_dim) and restarting:
 
@@ -968,7 +965,6 @@ class GKSSolver:
                 V = tmp.copy()
                 V = V[:,None]
                 dim_size = 1
-                
 
             # If dim_size == kmax, need to compress the basis
             if (dim_size == max_dim) and recycling:
@@ -1040,7 +1036,6 @@ class GKSSolver:
 
         return data
     
-
 
 
 

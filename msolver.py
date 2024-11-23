@@ -983,7 +983,8 @@ class GKSSolver:
 
                 # New basis
                 V = self.compress_priorconditioned_basis(V, R_Atilde, np.eye(R_Atilde.shape[1]), z, Q_Atilde, min_dim, lambdah)
-                
+                dim_size = V.shape[1]
+
                 # Solve the problem over the new basis
                 #dim_size = min_dim
                 #AV = self.A @ V 

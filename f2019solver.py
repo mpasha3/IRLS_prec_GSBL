@@ -584,9 +584,11 @@ class FGK2019Solver:
             
 
             try:
-                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                # OLDx version # proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                proposed_lambdah = discrepancy_principle(U, np.atleast_2d(M), R_N, c[:,None], delta=np.sqrt(self.m), explicitProj=True)
             except:
                 proposed_lambdah = 1e-14
+
 
             lambdah = max(lambdah_min, proposed_lambdah)
             lambdah = min(lambdah_max, lambdah)

@@ -232,7 +232,7 @@ class FGKIRWSolver:
         self._A = A
         self._L = L
         self._Linv = Linv
-        self.A = A @ Linv
+        self.A = self._A @ self._Linv
         self.L = jlinops.IdentityOperator((Linv.shape[1], Linv.shape[1]))
         self._b = b
         self.noise_var = noise_var
@@ -473,6 +473,7 @@ class FGKIRWSolver:
             
         # Metrics
         if x_true is not None:
+
             xbar = self._Linv @ x
             x_true_norm = np.linalg.norm(x_true)
             rre_history.append( np.linalg.norm(xbar - x_true)/x_true_norm )
@@ -536,7 +537,9 @@ class FGKIRWSolver:
 
             # Get initial weights and pseudoinverses
             w = self.update_weights(self.L @ x, lambdah, weight_params)
-            Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/(w**2)))
+            #Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/(w**2)))
+            tmp_op = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
+            Lpinv = tmp_op @ tmp_op
             # if mode in ["I", "R", "W"]:
             #     Lpinv = jlinops.MatrixLinearOperator(sps.diags(1.0/w))
             # else:
@@ -586,8 +589,11 @@ class FGKIRWSolver:
             else:
                 raise NotImplementedError
             
+
+            # discrepancy_principle(Q_A, R_A, R_L, c, delta=np.sqrt(self.m), explicitProj=True, **regparam_kwargs)
             try:
-                proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                # OLDx version # proposed_lambdah = discrepancy_principle(np.eye(len(e1)), np.atleast_2d(M), R_N, np.linalg.norm(c)*e1[:,None], delta=np.sqrt(self.m), explicitProj=False)
+                proposed_lambdah = discrepancy_principle(U, np.atleast_2d(M), R_N, c[:,None], delta=np.sqrt(self.m), explicitProj=True)
             except:
                 proposed_lambdah = 1e-14
 
@@ -598,6 +604,7 @@ class FGKIRWSolver:
             lambda_history.append(lambdah)
 
             # Solve for fixed lambda
+            # OLDx version # y, _ , _, svals = np.linalg.lstsq(np.vstack( (M, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )), rcond=-1)
             y, _ , _, svals = np.linalg.lstsq(np.vstack( (M, np.sqrt(lambdah) * R_N ) ), np.concatenate(( np.linalg.norm(c)*e1,  np.zeros(R_N.shape[0]) )), rcond=-1)
             cond_est = np.amax(svals)/np.amin(svals)
             cond_ests.append(cond_est)
@@ -605,7 +612,7 @@ class FGKIRWSolver:
 
             # Recover full solution
             x = Z @ y # Project back onto z space
-            xfull = x
+            xfull = x.copy()
             xbar = self._Linv @ xfull
             tot_matvec_WLpinv += 1 # matvec with WLpinv (Lpinv)
 

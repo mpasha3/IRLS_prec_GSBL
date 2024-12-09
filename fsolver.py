@@ -431,7 +431,7 @@ class FGKSolver:
         return V
     
 
-    def solve(self, n_iter=25, x0=None, regparam=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False, breakdown_tol=1e-14):
+    def solve(self, n_iter=25, x0=None, regparam=None, flex_cond_lim=None, x_true=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, ksparsity=None, weight_params=None, refresh_basis=False, breakdown_tol=1e-14):
 
         valid_regparams = ["dp3", "dp"]
         assert regparam or np.isscalar(regparam), f"Invalid choice of regparam, must be scalar or one of {valid_regparams}"
@@ -545,7 +545,7 @@ class FGKSolver:
                 Lopinv = Lpinv
 
             ### Update the FGK factorization
-            if i == 0:
+            if U.shape[1] == 1:
                 U, M, T, V, Z, broke = update_fgk(self.A, None, U, None, None, None, Lopinv @ Lopinv.T , breakdown_tol=breakdown_tol)
                 LZ = self.L @ Z
                 tot_matvec_L += 1
@@ -559,6 +559,7 @@ class FGKSolver:
             if broke:
                 broke_down_idx = i
                 break
+            
 
             # Check V is semi-orthogonal? 
             V_test = np.linalg.norm( (V.T @ V) - np.eye(V.shape[1]) )
@@ -634,6 +635,17 @@ class FGKSolver:
             # Compute k-sparsity?
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
+
+
+
+            # If flex_cond_lim given and exceeded, restart the method?
+            if flex_cond_lim is not None:
+                if cond_est > flex_cond_lim:
+                    r = c
+                    #r = self.b - self.A @ x
+                    u  = r / np.linalg.norm(r)
+                    U = u[:,None]
+
 
 
         # Package data

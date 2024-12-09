@@ -391,7 +391,7 @@ class GKSSolver:
 
 
 
-    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, ksparsity=None, regparam_kwargs={}, **kwargs):
+    def solve(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, Vinit=None, x0=None, x_true=None, err_norm_sq=None, weight_params=None, min_dim=None, max_dim=None, xker=None, ksparsity=None, regparam_kwargs={}, keep_solution_history=False, **kwargs):
         """Driver for GKS solver.
         """
 
@@ -412,6 +412,7 @@ class GKSSolver:
         hoyer_indices = []
         gini_indices = []
         end_time = time.time()
+        solution_history = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -440,6 +441,9 @@ class GKSSolver:
             tot_matvec_A += 1 # 1 A matvec for A^T b
         else:
             x = x0
+
+        if keep_solution_history:
+            solution_history.append(x)
 
         #if xker is not None:
             #c = self.b - (self.A @ xker)
@@ -591,6 +595,8 @@ class GKSSolver:
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
+            if keep_solution_history:
+                solution_history.append(x)
 
             # if ii >= R_WL.shape[0]:
             #     break
@@ -686,6 +692,7 @@ class GKSSolver:
             "dp_ineq_rhs": np.asarray(dp_ineq_rhs),
             "dp_ineq_chs": np.asarray(dp_ineq_chs),
             "n_completed_iterations": n_iter,
+            "solution_history": solution_history,
         }
 
         if x_true is not None:
@@ -707,7 +714,7 @@ class GKSSolver:
         
 
 
-    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, ksparsity=None, regparam_kwargs={}, err_norm_sq=0.0, **kwargs):
+    def solve_with_priorconditioning(self, n_iter=25, init_dim=5, regparam="dp", restart_dim=None, lambdah0=None, lambdah_min=1e-6, lambdah_max=1e6, x0=None, x_true=None, weight_params=None, min_dim=None, max_dim=None, ksparsity=None, regparam_kwargs={}, err_norm_sq=0.0, keep_solution_history=False, **kwargs):
         """Driver for GKS solver.
         """
         valid_regparams = ["dp3", "dp"]
@@ -734,6 +741,7 @@ class GKSSolver:
         dp_ineq_lhs = []
         dp_ineq_rhs = []
         dp_ineq_chs = []
+        solution_history = []
 
         # Initialize lambdah? Doesn't always actually affect anything, depending on the weight updates...
         if lambdah0 is None:
@@ -762,7 +770,6 @@ class GKSSolver:
             tot_matvec_A += 1 # matvec with A
         else:
             x = x0
-
 
         if x_true is not None:
             x_true_norm = np.linalg.norm(x_true)
@@ -807,6 +814,28 @@ class GKSSolver:
             xker = np.zeros(self.A.shape[1])
             c = self.b
 
+
+        # # Build initial basis and QR factor of AV # new initial basis method, 12/6
+        # V = self.build_initial_basis(init_dim)
+        # dim_size = init_dim
+        # tot_matvec_A += (2*(init_dim - 1)) + 1
+
+        # # If we passed x0, add it to the basis as another column.
+        # if x0 is not None:
+        #     vnew = x0 - (V @ (V.T @ x0) )
+        #     vnew /= np.linalg.norm(vnew)
+        #     V = np.column_stack((V, vnew))
+        #     dim_size += 1
+        #     print("Augmented basis with initial guess!")
+
+        # # Transform V and qr factor to reorthogonalize
+        # V = np.hstack([ self.L.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
+        # (V, _) = la.qr(V, mode='economic') 
+        # tot_matvec_L += V.shape[1]
+        # dim_size = V.shape[1]
+
+
+        ## Old version of initial basis, before 12/6
         # Build initial basis
         V = self.build_priorconditioning_initial_basis(Atilde, c, lambdah, init_dim)
         #(U, B, V) = golub_kahan(Atilde, c, init_dim, False, **kwargs) 
@@ -828,6 +857,10 @@ class GKSSolver:
             V = np.column_stack((V, vnew))
             #dim_size += 1
             print("Augmented basis with initial guess!")
+        
+        # Track solution history?
+        if keep_solution_history:
+            solution_history.append( (x, V, Lopinv ) )
 
         # For cubic dp
         self.beta0 = None
@@ -937,6 +970,9 @@ class GKSSolver:
             if ksparsity is not None:
                 ksparsity_indices.append( ksparsity_index(self.L @ x, ksparsity) )
 
+            if keep_solution_history:
+                solution_history.append( (x, V, Lopinv ) )
+
             v = AtildeV @ y
             v = v - c # should this be b or c?
             u = LV @ y
@@ -1014,6 +1050,7 @@ class GKSSolver:
             "dp_ineq_chs": np.asarray(dp_ineq_chs),
             "xker": xker,
             "n_completed_iterations": n_iter,
+            "solution_history": solution_history,
         }
 
         data["hoyer_indices"] = np.asarray(hoyer_indices)

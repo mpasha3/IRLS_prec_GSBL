@@ -989,11 +989,9 @@ class GKSSolver:
             V = np.column_stack((V, vn))
             residual_history.append(la.norm(r))
             dim_size += 1
-            tot_matvec_A += (V.shape[1]-1) # matvecs with A
-            tot_matvec_WLpinv += (V.shape[1]-1) # matvecs with WLpinv
+            tot_matvec_A += 1 # matvecs with A
+            tot_matvec_WLpinv += 1 # matvecs with WLpinv
         
-    
-
 
             # Restarting
             if (dim_size == restart_dim) and restarting:
@@ -1015,9 +1013,10 @@ class GKSSolver:
                 #WLV = W @ LV
 
                 # Get new QR factorization for Atilde
-                AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
-                tot_matvec_A += V.shape[1] # matvecs with A
-                tot_matvec_WLpinv += V.shape[1] # matvecs with WLpinv
+                #AtildeV = np.hstack([ Atilde.matvec(V[:,j])[:,None] for j in range(V.shape[1])  ])
+                AtildeV = np.hstack([ AtildeV, Atilde.matvec(V[:,-1])[:,None] ]) # only the last column has changed, and weights not updated yet!
+                tot_matvec_A += 1 # matvecs with A
+                tot_matvec_WLpinv += 1 # matvecs with WLpinv
                 AA = AtildeV
                 (Q_Atilde, R_Atilde) = la.qr(AA, mode='economic') 
 

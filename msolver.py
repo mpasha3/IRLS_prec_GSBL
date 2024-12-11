@@ -245,8 +245,8 @@ class GKSSolver:
         for j in range(1,dim):
             # print(j)
             # print(tmp)
-            #tmp = Atilde.T @ (Atilde @ tmp)
-            tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
+            tmp = Atilde.T @ (Atilde @ tmp)
+            #tmp = Atilde.T @ (Atilde @ tmp) + lambdah*tmp
             tmp = tmp/np.linalg.norm(tmp)
             V[:,j] = tmp.copy()
 

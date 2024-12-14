@@ -499,7 +499,9 @@ class GKSSolver:
         
 
         # Get initial LV
-        LV = self.L @ V 
+        LV = np.hstack( [ (self.L @ V[:,j])[:,None] for j in range(V.shape[1]) ]  )
+        #LV = self.L @ V
+        #print(LV.shape)
         tot_matvec_L += V.shape[1] # matvecs for LV
 
         # For cubic dp

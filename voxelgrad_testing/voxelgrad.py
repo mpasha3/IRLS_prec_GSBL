@@ -19,8 +19,66 @@ if CUPY_INSTALLED:
     from cupyx.scipy.sparse.linalg import SuperLU as cp_SuperLU
     from cupyx.scipy.sparse.linalg import cg as cupy_cg
 
+    from cupyx.scipy.fft import dctn as cp_dctn
+    from cupyx.scipy.fft import idctn as cp_idctn
 
 
+
+
+class VoxelDynamicTomoOperator(_CustomLinearOperator):
+    """
+    """
+    def __init__(self, As, voxel_shape, device="cpu"):
+
+        # Setup
+        self.As = As # list of operators
+        self.p = len(self.As) # number of operators
+        self.voxel_shape = voxel_shape
+        self.n = self.As[0].shape[1]
+        self.Nx, self.Ny, self.Nt = self.voxel_shape
+        self.ms = []
+        self.rmvec_idxs = []
+        rmvec_tmp = 0
+        for j, op in enumerate(self.As):
+            mj = op.shape[0]
+            assert op.shape[1] == self.n, "Not all A_i have same number of columns!"
+            self.ms.append(mj)
+
+            if j == 0:
+                self.rmvec_idxs.append( np.arange(mj) )
+                
+            else:
+                self.rmvec_idxs.append( np.arange(rmvec_tmp, rmvec_tmp+mj) )
+
+            rmvec_tmp += mj
+
+        shape = ( sum(self.ms) , self.Nx*self.Ny*self.Nt)
+
+
+        def _matvec(x):
+            x = x.reshape(self.voxel_shape)
+            result = []
+            for j in range(self.p):
+                result.append( self.As[j] @ x[:,:,j].flatten() ) # Apply Aj to jth temporal slice
+            result = np.vstack(result)
+            return result
+        
+
+        def _rmatvec(x):
+
+            #x = x.reshape(-1)
+            #pieces = []
+            result = np.zeros(self.voxel_shape)
+            for j, op in enumerate(self.As):
+                result[:,:,j] = op.rmatvec(x[self.rmvec_idxs[j]]).reshape((self.Nx, self.Ny))
+                #pieces.append( op.rmatvec(x[self.rmvec_idxs[j]]) )
+            return result.flatten()
+
+
+        super().__init__(shape, _matvec, _rmatvec, device=device)
+
+                
+        
 
 
 class Voxel2DTemporalGrad(_CustomLinearOperator):
@@ -36,33 +94,52 @@ class Voxel2DTemporalGrad(_CustomLinearOperator):
         shape = (n,n)
         #shape = ?
         
+        if device == "cpu":
 
-        def _matvec(x):
-            x = x.reshape(self.voxel_shape) # reshape it
-            result = np.zeros(self.voxel_shape)
-            for j in range(self.Nt-1): # we skipped the last slice, since this should be zero...
-                result[:,:,j] = x[:,:,j] - x[:,:,j+1]
-            return result.flatten()
+            def _matvec(x):
+                x = x.reshape(self.voxel_shape) # reshape it
+                result = np.zeros(self.voxel_shape)
+                for j in range(self.Nt-1): # we skipped the last slice, since this should be zero...
+                    result[:,:,j] = x[:,:,j] - x[:,:,j+1]
+                return result.flatten()
 
 
-        def _rmatvec(x):
-            x = x.reshape(self.voxel_shape)
-            result = np.zeros(self.voxel_shape)
-            result[:,:,0] = x[:,:,0]
-            for j in range(1,self.Nt-1):
-                result[:,:,j] = x[:,:,j] - x[:,:,j-1]
-            result[:,:,-1] = -x[:,:,-2]
-            return result.flatten()
+            def _rmatvec(x):
+                x = x.reshape(self.voxel_shape)
+                result = np.zeros(self.voxel_shape)
+                result[:,:,0] = x[:,:,0]
+                for j in range(1,self.Nt-1):
+                    result[:,:,j] = x[:,:,j] - x[:,:,j-1]
+                result[:,:,-1] = -x[:,:,-2]
+                return result.flatten()
 
+        elif device == "gpu":
+
+            def _matvec(x):
+                x = x.reshape(self.voxel_shape) # reshape it
+                result = cp.zeros(self.voxel_shape)
+                for j in range(self.Nt-1): # we skipped the last slice, since this should be zero...
+                    result[:,:,j] = x[:,:,j] - x[:,:,j+1]
+                return result.flatten()
+            
+            def _rmatvec(x):
+                x = x.reshape(self.voxel_shape)
+                result = cp.zeros(self.voxel_shape)
+                result[:,:,0] = x[:,:,0]
+                for j in range(1,self.Nt-1):
+                    result[:,:,j] = x[:,:,j] - x[:,:,j-1]
+                result[:,:,-1] = -x[:,:,-2]
+                return result.flatten()
 
         super().__init__(shape, _matvec, _rmatvec, device=device)
         
+
+
+    def to_gpu(self):
+        return Voxel2DTemporalGrad(self.voxel_shape, device="gpu")
     
-    # def to_gpu(self):
-    #     return DCT3D(self.grid_shape, device="gpu", type=self.type)
-    
-    # def to_cpu(self):
-    #     return DCT2D(self.grid_shape, device="cpu", type=self.type)
+    def to_cpu(self):
+        return Voxel2DTemporalGrad(self.voxel_shape, device="cpu")
 
 
 
@@ -74,39 +151,58 @@ class VoxelNeumann2DSpatial(_CustomLinearOperator):
     def __init__(self, voxel_shape, device="cpu"):
         
 
-        Nx, Ny, Nt = voxel_shape # unpack shapes
+        self.Nx, self.Ny, self.Nt = voxel_shape # unpack shapes
         self.voxel_shape = voxel_shape
         n = math.prod(self.voxel_shape)
         shape = (n,n)
-        self.Lspatial = jlinops.Neumann2D((self.Nx, self.Ny))
+        self.Lspatial = jlinops.Neumann2D((self.Nx, self.Ny), device=device)
         shape = ( self.Lspatial.shape[0]*self.Nt, n)    
 
-        def _matvec(x):
-            x = x.reshape(self.voxel_shape) # reshape it
-            result = np.zeros((2*self.Nx*self.Ny, self.Nt))
-            for j in range(self.Nt):
-                result[:,j] = self.Lspatial @ x[:,:,j].flatten() 
-            return result.flatten()
+        if device == "cpu":
 
+            def _matvec(x):
+                x = x.reshape(self.voxel_shape) # reshape it
+                result = np.zeros((2*self.Nx*self.Ny, self.Nt))
+                for j in range(self.Nt):
+                    result[:,j] = self.Lspatial @ x[:,:,j].flatten() 
+                return result.flatten()
 
-        def _rmatvec(x):
-            result = []
-            result = np.zeros((self.Nx, self.Ny, self.Nt))
-            tmp = x.reshape((2*self.Nx*self.Ny, self.Nt))
-            for j in range(self.Nt):
-                result[:,:,j] = (self.Lspatial.T @ tmp[:,j]).reshape((self.Nx, self.Ny))
+            def _rmatvec(x):
+                result = []
+                result = np.zeros((self.Nx, self.Ny, self.Nt))
+                tmp = x.reshape((2*self.Nx*self.Ny, self.Nt))
+                for j in range(self.Nt):
+                    result[:,:,j] = (self.Lspatial.T @ tmp[:,j]).reshape((self.Nx, self.Ny))
 
-            return result.flatten()
+                return result.flatten()
+            
+        elif device == "gpu":
+
+            def _matvec(x):
+                x = x.reshape(self.voxel_shape) # reshape it
+                result = cp.zeros((2*self.Nx*self.Ny, self.Nt))
+                for j in range(self.Nt):
+                    result[:,j] = self.Lspatial @ x[:,:,j].flatten() 
+                return result.flatten()
+
+            def _rmatvec(x):
+                result = []
+                result = cp.zeros((self.Nx, self.Ny, self.Nt))
+                tmp = x.reshape((2*self.Nx*self.Ny, self.Nt))
+                for j in range(self.Nt):
+                    result[:,:,j] = (self.Lspatial.T @ tmp[:,j]).reshape((self.Nx, self.Ny))
+
+                return result.flatten()
 
 
         super().__init__(shape, _matvec, _rmatvec, device=device)
         
     
-    # def to_gpu(self):
-    #     return DCT2D(self.grid_shape, device="gpu", type=self.type)
+    def to_gpu(self):
+        return VoxelNeumann2DSpatial(self.voxel_shape, device="gpu")
     
-    # def to_cpu(self):
-    #     return DCT2D(self.grid_shape, device="cpu", type=self.type)
+    def to_cpu(self):
+        return VoxelNeumann2DSpatial(self.voxel_shape, device="cpu")
 
 
 
@@ -338,7 +434,7 @@ class CGWeightedVoxelGradPinvGPUOperator(_CustomLinearOperator):
         self.Wpinv = jlinops.QRPinvOperator(self.W)
 
         # Make Rwpinv
-        self.Rwpinv = jlinops.CGPreconditionedPinvModOperator(self.Rw, self.W, self.Wpinv, self.RtRpinv, warmstart_prev=warmstart_prev, check=check, which=which, *args, **kwargs).to_gpu()
+        self.Rwpinv = jlinops.CGPreconditionedPinvModOperator(self.Rw, self.W, self.Wpinv, self.RtRpinv, warmstart_prev=warmstart_prev, check=check, which=which, *args, **kwargs)
 
         def _matvec(x):
             return cp.asnumpy( self.Rwpinv.matvec( cp.asarray(x) ) )
